@@ -11,7 +11,7 @@ It is a port of [Shadowsocks](https://github.com/shadowsocks/shadowsocks)
 created by [@clowwindy](https://github.com/clowwindy), and maintained by
 [@madeye](https://github.com/madeye) and [@linusyang](https://github.com/linusyang).
 
-Current version: 3.3.6 | [Changelog](debian/changelog)
+Current version: 3.3.7 | [Changelog](debian/changelog)
 
 [CLI reference and configuration guide](https://shadowsocks.github.io/shadowsocks-c/)
 are generated from the source with Doxygen and published after updates to `master`.

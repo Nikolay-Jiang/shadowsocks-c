@@ -117,7 +117,6 @@ private:
     std::uint8_t user_index_ = crypto::kAnonymousIdentity;
     bool user_counted_       = false;
     bool anonymous_counted_  = false;
-    bool logged_             = false;
     std::uint64_t started_ms_ = 0;
     std::uint64_t conn_tx_    = 0;
     std::uint64_t conn_rx_    = 0;
