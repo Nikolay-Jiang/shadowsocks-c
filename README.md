@@ -20,6 +20,9 @@ An opt-in [printable TCP salt experiment](docs/printable-salt.md) is available
 through `ss-local --printable-salt` or `"printable_salt": true` in the config
 file. It is disabled by default.
 
+SIP023 multi-user identities, anonymous per-IP limits, and the `ssctl` status
+tool are documented in [SIP023 users and anonymous limits](docs/sip023-users.md).
+
 Use `--help` for grouped CLI options and `--version` for version information.
 See [CLI conventions](https://shadowsocks.github.io/shadowsocks-c/index.html#cli_conventions)
 for the long flags, short aliases, and configuration precedence.
@@ -466,6 +469,12 @@ you may refer to the man pages of the applications, respectively.
 
        [--manager-address <addr>] UNIX domain socket address.
                                   (only available in server and manager mode)
+
+       [--control-socket <path>] Local read-only control socket queried by
+                                  ssctl. (server mode)
+
+       [--access-log]             Log authenticated connections with the
+                                  SIP023 user ID, peer address and target.
 
        [--mtu <MTU>]              MTU of your network interface.
 

@@ -2,6 +2,7 @@
 #include "relay/udp.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <memory>
@@ -55,6 +56,22 @@ cmsghdr *next_cmsg(msghdr *msg, cmsghdr *c) noexcept
 }
 #pragma GCC diagnostic pop
 #endif
+
+void peer_endpoint(const sockaddr_storage &addr, char *out, std::size_t size) noexcept
+{
+    char ip[INET6_ADDRSTRLEN] = {};
+    if (addr.ss_family == AF_INET) {
+        const auto *in = reinterpret_cast<const sockaddr_in *>(&addr);
+        ss_inet_ntop(AF_INET, &in->sin_addr, ip, sizeof(ip));
+        std::snprintf(out, size, "%s:%u", ip, ntohs(in->sin_port));
+    } else if (addr.ss_family == AF_INET6) {
+        const auto *in = reinterpret_cast<const sockaddr_in6 *>(&addr);
+        ss_inet_ntop(AF_INET6, &in->sin6_addr, ip, sizeof(ip));
+        std::snprintf(out, size, "[%s]:%u", ip, ntohs(in->sin6_port));
+    } else {
+        std::snprintf(out, size, "-");
+    }
+}
 
 constexpr int kQosTos             = 46 << 2; // DSCP EF, as udprelay.cpp
 constexpr int kReceiveBurst       = 64;
@@ -247,6 +264,14 @@ void UdpSession::begin_close(CloseCompletion done) noexcept
 {
     if (static_cast<ListNode<event::DeadlineTag> &>(*this).linked()) {
         event::DeadlineList<UdpSession>::remove(*this);
+    }
+    if (relay_->config_.users != nullptr && user_counted_) {
+        relay_->config_.users->close(user_index_, false);
+        user_counted_ = false;
+    }
+    if (relay_->config_.limiter != nullptr && anonymous_counted_) {
+        relay_->config_.limiter->end_udp(reinterpret_cast<const sockaddr *>(&client_), true);
+        anonymous_counted_ = false;
     }
     server2022_.reset();
     done_ = done;
@@ -558,8 +583,9 @@ void UdpRelay::client_packet(Listener &listener, const sockaddr_storage &from, s
     if (const crypto::MasterKey *master = method_->aead()) {
         sealed = crypto::aead_udp_seal(*master, plain, in_, crypto::ReplayFilter::ppbloom());
     } else if (const crypto::Psk *psk = method_->psk()) {
-        if (n + crypto::udp2022_overhead(*psk, Role::client) <= in_.size()) {
-            sealed = crypto::udp2022_seal(*psk, Role::client, session->client2022_, plain, in_);
+        const crypto::Psk *identity = method_->identity_psk();
+        if (n + crypto::udp2022_overhead(*psk, Role::client, identity != nullptr) <= in_.size()) {
+            sealed = crypto::udp2022_seal(*psk, Role::client, session->client2022_, plain, in_, identity);
         }
     }
     if (!sealed) {
@@ -641,21 +667,28 @@ void UdpRelay::server_packet(Listener &listener, const sockaddr_storage &from, s
     if (const crypto::MasterKey *master = method_->aead()) {
         opened = crypto::aead_udp_open(*master, packet, out_, crypto::ReplayFilter::ppbloom());
     } else if (const crypto::Psk *psk = method_->psk()) {
-        auto pkt = crypto::udp2022_decrypt(*psk, packet, out_);
+        auto pkt = crypto::udp2022_decrypt(*psk, packet, out_, method_->identity_table());
         if (pkt) {
             // A new client session enters the table only once its first
             // packet passes the timestamp and replay checks, so replayed
             // stale packets cannot evict live sessions.
             shared     = shared_find(pkt->session_id);
             bool fresh = !shared;
-            if (fresh) {
-                shared = shared_new();
-            }
-            if (shared) {
-                opened = crypto::udp2022_accept(Role::server, shared->state, *pkt, out_,
-                                                static_cast<std::uint64_t>(std::time(nullptr)));
-                if (opened && fresh && !shared_insert(pkt->session_id, shared)) {
-                    opened = fail(Errc::exhausted);
+            if (shared && shared->user_index != pkt->user_index) {
+                opened = fail(Errc::crypto);
+            } else {
+                if (fresh) {
+                    shared = shared_new();
+                    if (shared) {
+                        shared->user_index = pkt->user_index;
+                    }
+                }
+                if (shared) {
+                    opened = crypto::udp2022_accept(Role::server, shared->state, *pkt, out_,
+                                                    static_cast<std::uint64_t>(std::time(nullptr)));
+                    if (opened && fresh && !shared_insert(pkt->session_id, shared)) {
+                        opened = fail(Errc::exhausted);
+                    }
                 }
             }
         }
@@ -754,10 +787,48 @@ void UdpRelay::server_forward(std::uint8_t listener, const sockaddr_storage &cli
     if (session == nullptr) {
         return;
     }
+    const std::uint64_t now = loop_->now();
+    const std::uint8_t incoming_user = shared ? shared->user_index : crypto::kAnonymousIdentity;
+    if (session->started_ms_ != 0 && session->user_index_ != incoming_user) {
+        expire(*session);
+        return;
+    }
     if (shared) {
         session->server2022_ = std::move(shared); // replies use the latest validated session
     }
-    idle_.touch(*session, loop_->now());
+    if (session->started_ms_ == 0) {
+        session->started_ms_ = now;
+        session->user_index_ = incoming_user;
+        const bool anonymous = session->is_anonymous();
+        if (anonymous && config_.limiter != nullptr
+            && !config_.limiter->begin_udp(reinterpret_cast<const sockaddr *>(&session->client_), true, now)) {
+            expire(*session);
+            return;
+        }
+        session->anonymous_counted_ = anonymous;
+        if (config_.users != nullptr) {
+            config_.users->open(session->user_index_, false, now);
+            session->user_counted_ = true;
+        }
+        if (config_.access_log) {
+            char peer_text[128] = {};
+            peer_endpoint(session->client_, peer_text, sizeof(peer_text));
+            const char *uid = anonymous ? "anonymous" : method_->user_id(session->user_index_);
+            LOGI("user=%s peer=%s proto=udp", uid, peer_text);
+        }
+    }
+    session->conn_tx_ += payload.size();
+    if (config_.users != nullptr) {
+        config_.users->add_tx(session->user_index_, payload.size(), now);
+    }
+    if (config_.limiter != nullptr && session->is_anonymous()) {
+        if (config_.limiter->budget(reinterpret_cast<const sockaddr *>(&session->client_), payload.size(), true, now)
+            < payload.size()) {
+            return; // over the anonymous per-IP upload rate: drop the datagram
+        }
+        config_.limiter->consume(reinterpret_cast<const sockaddr *>(&session->client_), payload.size(), true, now);
+    }
+    idle_.touch(*session, now);
     schedule();
     if (sendto(session->socket_.fd(), reinterpret_cast<const char *>(payload.data()), payload.size(), 0, target,
                sockaddr_size(target))
@@ -792,6 +863,10 @@ void UdpRelay::reply(UdpSession &session) noexcept
             if (config_.rx != nullptr) {
                 *config_.rx += packet.size();
             }
+            session.conn_rx_ += packet.size();
+            if (config_.users != nullptr) {
+                config_.users->add_rx(session.user_index_, packet.size(), loop_->now());
+            }
             // [source address][payload], sealed back to the client.
             std::size_t header = encode_socks_addr(reinterpret_cast<const sockaddr *>(&from), out_.data());
             if (header == 0) {
@@ -803,8 +878,15 @@ void UdpRelay::reply(UdpSession &session) noexcept
             if (const crypto::MasterKey *master = method_->aead()) {
                 sealed = crypto::aead_udp_seal(*master, plain, in_, crypto::ReplayFilter::ppbloom());
             } else if (const crypto::Psk *psk = method_->psk()) {
-                if (session.server2022_ && plain.size() + crypto::udp2022_overhead(*psk, Role::server) <= in_.size()) {
-                    sealed = crypto::udp2022_seal(*psk, Role::server, session.server2022_->state, plain, in_);
+                const crypto::Psk *traffic = psk;
+                if (session.server2022_ && session.server2022_->user_index != crypto::kAnonymousIdentity) {
+                    if (const crypto::Psk *user = method_->identity_table()->key(session.server2022_->user_index)) {
+                        traffic = user;
+                    }
+                }
+                if (session.server2022_
+                    && plain.size() + crypto::udp2022_overhead(*traffic, Role::server) <= in_.size()) {
+                    sealed = crypto::udp2022_seal(*traffic, Role::server, session.server2022_->state, plain, in_);
                 }
             }
             if (!sealed) {

@@ -22,7 +22,8 @@ constexpr Aead2022Spec kSpecs[] = {
       { "2022-blake3-chacha20-poly1305", AeadKind::chacha20_poly1305, 32, 12, 16 } },
 };
 
-constexpr char kSubkeyContext[] = "shadowsocks 2022 session subkey";
+constexpr char kSubkeyContext[]     = "shadowsocks 2022 session subkey";
+constexpr char kIdentityContext[]   = "shadowsocks 2022 identity subkey";
 
 constexpr std::uint8_t kTypeClient = 0;
 constexpr std::uint8_t kTypeServer = 1;
@@ -126,6 +127,71 @@ Status sep_header(const Psk &psk, std::uint8_t *dst, const std::uint8_t *src, bo
     return {};
 }
 
+// AES-ECB over one 16-byte block with an arbitrary AES key (the identity
+// subkey for TCP, or the identity PSK itself for UDP).
+Status aes_ecb_block(std::span<const std::uint8_t> key, std::uint8_t *dst, const std::uint8_t *src,
+                     bool encrypt) noexcept
+{
+    if (key.size() != 16 && key.size() != 32) {
+        return fail(Errc::crypto);
+    }
+    mbedtls_aes_context aes;
+    mbedtls_aes_init(&aes);
+    unsigned bits = static_cast<unsigned>(key.size() * 8);
+    int rc        = encrypt ? mbedtls_aes_setkey_enc(&aes, key.data(), bits)
+                            : mbedtls_aes_setkey_dec(&aes, key.data(), bits);
+    if (rc == 0) {
+        rc = mbedtls_aes_crypt_ecb(&aes, encrypt ? MBEDTLS_AES_ENCRYPT : MBEDTLS_AES_DECRYPT, src, dst);
+    }
+    mbedtls_aes_free(&aes);
+    if (rc != 0) {
+        return fail(Errc::crypto);
+    }
+    return {};
+}
+
+// TCP SIP023 identity header: AES-ECB(identity_subkey, hash(user PSK)), where
+// identity_subkey is BLAKE3-derived from the identity PSK and the request salt.
+Status identity_tcp_block(const Psk &identity, const Psk &user, std::span<const std::uint8_t> salt,
+                          std::uint8_t block[kIdentityLen], bool encrypt) noexcept
+{
+    if (identity.chacha() || identity.size() != salt.size()) {
+        return fail(Errc::protocol);
+    }
+    blake3_hasher hasher;
+    blake3_hasher_init_derive_key(&hasher, kIdentityContext);
+    blake3_hasher_update(&hasher, identity.key().data(), identity.size());
+    blake3_hasher_update(&hasher, salt.data(), salt.size());
+    std::array<std::uint8_t, kMaxKey> subkey{};
+    blake3_hasher_finalize(&hasher, subkey.data(), subkey.size());
+    sodium_memzero(&hasher, sizeof(hasher));
+
+    std::array<std::uint8_t, kIdentityLen> hash{};
+    std::array<std::uint8_t, kIdentityLen> result{};
+    if (encrypt) {
+        identity_hash_16(user, hash);
+    }
+    Status st = aes_ecb_block({ subkey.data(), identity.size() }, result.data(),
+                              encrypt ? hash.data() : block, encrypt);
+    if (st) {
+        std::memcpy(block, result.data(), result.size());
+    }
+    sodium_memzero(subkey.data(), subkey.size());
+    sodium_memzero(hash.data(), hash.size());
+    sodium_memzero(result.data(), result.size());
+    return st;
+}
+
+// UDP SIP023 identity header: AES-ECB(identity PSK, hash(user PSK) XOR
+// session_id || packet_id).
+void identity_udp_mask(std::span<const std::uint8_t> separate,
+                       std::array<std::uint8_t, kIdentityLen> &block) noexcept
+{
+    for (std::size_t i = 0; i < kIdentityLen && i < separate.size(); ++i) {
+        block[i] ^= separate[i];
+    }
+}
+
 void window_reset(UdpSession2022 &s, const std::array<std::uint8_t, kSessionIdLen> &id, std::uint64_t packet) noexcept
 {
     s.rx_id = id;
@@ -205,6 +271,63 @@ void derive_subkey_2022(std::span<const std::uint8_t> psk, std::span<const std::
     sodium_memzero(&hasher, sizeof(hasher));
 }
 
+void identity_hash_16(const Psk &psk, std::array<std::uint8_t, kIdentityLen> &out) noexcept
+{
+    blake3_hasher hasher;
+    blake3_hasher_init(&hasher);
+    blake3_hasher_update(&hasher, psk.key().data(), psk.size());
+    blake3_hasher_finalize(&hasher, out.data(), out.size());
+    sodium_memzero(&hasher, sizeof(hasher));
+}
+
+Status IdentityTable::reserve(std::uint32_t capacity, std::uint64_t seed) noexcept
+{
+    if (capacity == 0 || capacity > kMaxIdentityUsers) {
+        return fail(Errc::invalid);
+    }
+    return index_.reserve(capacity, seed);
+}
+
+Status IdentityTable::add(std::span<const std::uint8_t> hash, const Psk &key, std::uint8_t index) noexcept
+{
+    if (hash.size() != kIdentityLen || index >= kMaxIdentityUsers || used_[index]) {
+        return fail(Errc::invalid);
+    }
+    auto fixed = FixedKey<kIdentityLen>::from(as_bytes(hash.data(), hash.size()));
+    if (!fixed) {
+        return fail(Errc::invalid);
+    }
+    auto inserted = index_.emplace(*fixed, index);
+    if (!inserted) {
+        return fail(inserted.error());
+    }
+    keys_[index] = key;
+    used_[index] = true;
+    return {};
+}
+
+const Psk *IdentityTable::find(std::span<const std::uint8_t> hash, std::uint8_t &index) const noexcept
+{
+    if (hash.size() != kIdentityLen) {
+        return nullptr;
+    }
+    auto fixed = FixedKey<kIdentityLen>::from(as_bytes(hash.data(), hash.size()));
+    if (!fixed) {
+        return nullptr;
+    }
+    const std::uint8_t *found = index_.find(*fixed);
+    if (found == nullptr || *found >= kMaxIdentityUsers || !used_[*found]) {
+        return nullptr;
+    }
+    index = *found;
+    return &keys_[*found];
+}
+
+const Psk *IdentityTable::key(std::uint8_t index) const noexcept
+{
+    return index < kMaxIdentityUsers && used_[index] ? &keys_[index] : nullptr;
+}
+
 bool SaltPool::check_and_add(std::span<const std::uint8_t> salt, std::uint64_t now) noexcept
 {
     auto key = FixedKey<kMaxKey>::from(std::as_bytes(salt));
@@ -229,14 +352,19 @@ bool SaltPool::check_and_add(std::span<const std::uint8_t> salt, std::uint64_t n
     return seen_.emplace(*key, now).has_value();
 }
 
-Status Aead2022TcpEncryptor::init(const Psk &psk, Role role, const Aead2022TcpDecryptor *request) noexcept
+Status Aead2022TcpEncryptor::init(const Psk &psk, Role role, const Aead2022TcpDecryptor *request,
+                                  const Psk *identity) noexcept
 {
     if (role == Role::server && request == nullptr) {
         return fail(Errc::invalid);
     }
+    if (identity != nullptr && (psk.chacha() || identity->chacha() || psk.spec.aead.key_len != identity->size())) {
+        return fail(Errc::config);
+    }
     psk_         = psk;
     role_        = role;
     peer_        = request;
+    identity_    = identity;
     header_sent_ = false;
     nonce_.fill(0);
     randombytes_buf(salt_.data(), psk.size());
@@ -252,8 +380,10 @@ std::size_t Aead2022TcpEncryptor::sealed_size(std::size_t plaintext_len) const n
     if (header_sent_) {
         return chunks_cost(plaintext_len);
     }
-    // salt, fixed header and its tag, the header/first chunk tag, padding.
-    return psk_.size() + kMaxFixed + kTag + kLenSize + k2022MaxPad + kTag + chunks_cost(plaintext_len);
+    // salt, optional identity header, fixed header and its tag, the
+    // header/first chunk tag, padding.
+    std::size_t identity = role_ == Role::client && identity_ != nullptr ? kIdentityLen : 0;
+    return psk_.size() + identity + kMaxFixed + kTag + kLenSize + k2022MaxPad + kTag + chunks_cost(plaintext_len);
 }
 
 Result<std::size_t> Aead2022TcpEncryptor::seal_one(std::span<const std::uint8_t> plaintext, std::uint8_t *out) noexcept
@@ -300,6 +430,13 @@ Result<std::size_t> Aead2022TcpEncryptor::seal(std::span<const std::uint8_t> pla
     std::span<const std::uint8_t> rest;
 
     if (role_ == Role::client) {
+        if (identity_ != nullptr) {
+            Status st = identity_tcp_block(*identity_, psk_, salt(), out.data() + at, true);
+            if (!st) {
+                return fail(st.error().code);
+            }
+            at += kIdentityLen;
+        }
         std::size_t addr_len = socks_addr_len(plaintext);
         if (addr_len == 0) {
             return fail(Errc::protocol);
@@ -353,19 +490,24 @@ Result<std::size_t> Aead2022TcpEncryptor::seal(std::span<const std::uint8_t> pla
 }
 
 Status Aead2022TcpDecryptor::init(const Psk &psk, Role role, std::span<const std::uint8_t> request_salt,
-                                  SaltPool *pool) noexcept
+                                  SaltPool *pool, const IdentityTable *identities) noexcept
 {
     if (role == Role::client && request_salt.size() != psk.size()) {
         return fail(Errc::invalid);
     }
-    psk_    = psk;
-    role_   = role;
-    pool_   = pool;
-    stage_  = Stage::fixed;
-    failed_ = false;
-    want_   = 0;
-    plain_  = 0;
-    skip_   = 0;
+    psk_       = psk;
+    base_psk_  = psk;
+    role_      = role;
+    pool_      = pool;
+    identities_ = identities;
+    stage_     = role == Role::server && !psk.chacha() && identities != nullptr ? Stage::identity : Stage::fixed;
+    failed_    = false;
+    want_      = 0;
+    plain_     = 0;
+    skip_      = 0;
+    user_index_       = kAnonymousIdentity;
+    identity_resolved_ = stage_ == Stage::fixed;
+    header_received_   = false;
     nonce_.fill(0);
     request_salt_.fill(0);
     if (!request_salt.empty()) {
@@ -432,6 +574,41 @@ Result<Aead2022TcpDecryptor::Step> Aead2022TcpDecryptor::decrypt(std::span<const
         }
         auto data = bytes();
         switch (stage_) {
+        case Stage::identity: {
+            // A server may read an optional SIP023 identity header between
+            // the salt and the first AEAD chunk. Try the one known identity
+            // layer; a miss means this is an anonymous request and those
+            // bytes are part of the chunk.
+            if (data.size() < salt_len + kIdentityLen) {
+                return step;
+            }
+            std::array<std::uint8_t, kMaxKey> salt_buf{};
+            std::memcpy(salt_buf.data(), data.data(), salt_len);
+            std::array<std::uint8_t, kIdentityLen> block{};
+            std::memcpy(block.data(), data.data() + salt_len, block.size());
+            Status st = identity_tcp_block(base_psk_, base_psk_, { salt_buf.data(), salt_len }, block.data(), false);
+            if (!st) {
+                return broken(st.error().code);
+            }
+            std::uint8_t index = kAnonymousIdentity;
+            const Psk *user    = identities_->find(block, index);
+            if (user != nullptr) {
+                psk_        = *user;
+                user_index_ = index;
+                // Drop salt + identity header, then put the salt back for
+                // the fixed-header stage, which still expects it in front.
+                (void)buffer_.consume(salt_len + kIdentityLen);
+                if (!buffer_.prepend(as_bytes(salt_buf.data(), salt_len))) {
+                    return broken(Errc::crypto);
+                }
+            } else {
+                psk_        = base_psk_;
+                user_index_ = kAnonymousIdentity;
+            }
+            identity_resolved_ = true;
+            stage_             = Stage::fixed;
+            break;
+        }
         case Stage::fixed: {
             // A server reads requests; a client reads responses.
             std::size_t fixed_len = role_ == Role::server ? kReqFixed : resp_fixed(salt_len);
@@ -471,7 +648,8 @@ Result<Aead2022TcpDecryptor::Step> Aead2022TcpDecryptor::decrypt(std::span<const
                 return broken(Errc::protocol);
             }
             (void)buffer_.consume(salt_len + fixed_len + kTag);
-            stage_ = Stage::variable;
+            header_received_ = true;
+            stage_           = Stage::variable;
             break;
         }
         case Stage::variable: {
@@ -542,16 +720,23 @@ UdpSession2022::~UdpSession2022()
     sodium_memzero(tx_subkey.data(), tx_subkey.size());
 }
 
-std::size_t udp2022_overhead(const Psk &psk, Role role) noexcept
+std::size_t udp2022_overhead(const Psk &psk, Role role, bool with_identity) noexcept
 {
     std::size_t prefix = psk.chacha() ? kUdpXNonce + kUdpSepHeader : kUdpSepHeader;
+    if (with_identity && !psk.chacha()) {
+        prefix += kIdentityLen;
+    }
     return prefix + udp_header_len(role) + kTag;
 }
 
 Result<std::size_t> udp2022_seal(const Psk &psk, Role role, UdpSession2022 &session,
-                                 std::span<const std::uint8_t> plaintext, std::span<std::uint8_t> out) noexcept
+                                 std::span<const std::uint8_t> plaintext, std::span<std::uint8_t> out,
+                                 const Psk *identity) noexcept
 {
-    const std::size_t total = udp2022_overhead(psk, role) + plaintext.size();
+    if (identity != nullptr && (psk.chacha() || identity->chacha() || identity->size() != psk.size())) {
+        return fail(Errc::config);
+    }
+    const std::size_t total = udp2022_overhead(psk, role, identity != nullptr) + plaintext.size();
     if (out.size() < total) {
         return fail(Errc::invalid);
     }
@@ -574,7 +759,11 @@ Result<std::size_t> udp2022_seal(const Psk &psk, Role role, UdpSession2022 &sess
     // The body (main header + payload) is assembled where its ciphertext
     // goes and encrypted in place; for ChaCha the separate header is part
     // of the encrypted body.
-    std::uint8_t *body = out.data() + (psk.chacha() ? kUdpXNonce + kUdpSepHeader : kUdpSepHeader);
+    std::size_t prefix = psk.chacha() ? kUdpXNonce + kUdpSepHeader : kUdpSepHeader;
+    if (identity != nullptr) {
+        prefix += kIdentityLen;
+    }
+    std::uint8_t *body = out.data() + prefix;
     std::size_t o      = 0;
     body[o++]          = role == Role::server ? kTypeServer : kTypeClient;
     store64_be(body + o, unix_now());
@@ -600,7 +789,15 @@ Result<std::size_t> udp2022_seal(const Psk &psk, Role role, UdpSession2022 &sess
             return fail(Errc::crypto);
         }
     } else {
-        SS_TRY(sep_header(psk, out.data(), sep, true));
+        const Psk &sep_key = identity != nullptr ? *identity : psk;
+        SS_TRY(sep_header(sep_key, out.data(), sep, true));
+        if (identity != nullptr) {
+            std::array<std::uint8_t, kIdentityLen> block{};
+            identity_hash_16(psk, block);
+            identity_udp_mask({ sep, kUdpSepHeader }, block);
+            SS_TRY(aes_ecb_block(identity->key(), out.data() + kUdpSepHeader, block.data(), true));
+            sodium_memzero(block.data(), block.size());
+        }
         AeadEngine engine;
         SS_TRY(engine.init(psk.spec.aead, { session.tx_subkey.data(), psk.size() }));
         SS_TRY(engine.seal(body, { body, body_len }, sep + 4));
@@ -610,7 +807,7 @@ Result<std::size_t> udp2022_seal(const Psk &psk, Role role, UdpSession2022 &sess
 }
 
 Result<Udp2022Packet> udp2022_decrypt(const Psk &psk, std::span<const std::uint8_t> packet,
-                                      std::span<std::uint8_t> out) noexcept
+                                      std::span<std::uint8_t> out, const IdentityTable *identities) noexcept
 {
     if (out.size() < packet.size()) {
         return fail(Errc::invalid);
@@ -640,14 +837,31 @@ Result<Udp2022Packet> udp2022_decrypt(const Psk &psk, std::span<const std::uint8
     SS_TRY(sep_header(psk, sep, packet.data(), false));
     std::memcpy(result.session_id.data(), sep, kSessionIdLen);
     result.packet_id = load64_be(sep + kSessionIdLen);
+
+    std::size_t identity_len = 0;
+    const Psk *traffic      = &psk;
+    if (identities != nullptr && packet.size() >= kUdpSepHeader + kIdentityLen + kTag) {
+        std::array<std::uint8_t, kIdentityLen> block{};
+        SS_TRY(aes_ecb_block(psk.key(), block.data(), packet.data() + kUdpSepHeader, false));
+        identity_udp_mask({ sep, kUdpSepHeader }, block);
+        std::uint8_t index     = kAnonymousIdentity;
+        const Psk *user        = identities->find(block, index);
+        sodium_memzero(block.data(), block.size());
+        if (user != nullptr) {
+            traffic              = user;
+            result.user_index    = index;
+            identity_len         = kIdentityLen;
+        }
+    }
+
     std::array<std::uint8_t, kMaxKey> subkey{};
-    derive_subkey_2022(psk.key(), result.session_id, { subkey.data(), psk.size() });
+    derive_subkey_2022(traffic->key(), result.session_id, { subkey.data(), psk.size() });
     AeadEngine engine;
     Status st = engine.init(psk.spec.aead, { subkey.data(), psk.size() });
     sodium_memzero(subkey.data(), subkey.size());
     SS_TRY(st);
-    SS_TRY(engine.open(out.data(), packet.subspan(kUdpSepHeader), sep + 4));
-    result.body_len = packet.size() - kUdpSepHeader - kTag;
+    SS_TRY(engine.open(out.data(), packet.subspan(kUdpSepHeader + identity_len), sep + 4));
+    result.body_len = packet.size() - kUdpSepHeader - identity_len - kTag;
     return result;
 }
 

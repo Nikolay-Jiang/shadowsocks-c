@@ -114,7 +114,11 @@ test_read_jconf_copies_out_of_the_parse_tree()
                  "  \"port_password\": {\"8381\": \"one\", \"8382\": \"two\", \"8383\": 3},\n"
                  "  \"dscp\": {\"8381\": \"EF\", \"8382\": \"AF41\"},\n"
                  "  \"acl\": null,\n"
-                 "  \"max_connections\": 64\n"
+                 "  \"max_connections\": 64,\n"
+                 "  \"users\": {\"alice\": \"a\", \"bob\": \"b\", \"bad\": 3},\n"
+                 "  \"anonymous_limits\": {\"max_tcp_connections_per_ip\": 20, "
+                 "\"max_udp_sessions_per_ip\": 21, \"upload_kbps_per_ip\": 1024},\n"
+                 "  \"control_socket\": \"/tmp/ss.sock\", \"access_log\": true\n"
                  "}\n");
 
     jconf_t *conf = read_jconf(path);
@@ -142,6 +146,15 @@ test_read_jconf_copies_out_of_the_parse_tree()
     SS_CHECK(same(conf->dscp[1].port, "8382") && conf->dscp[1].dscp == 34);
     SS_CHECK(conf->acl == nullptr);
     SS_CHECK(conf->max_connections == 64);
+    SS_CHECK(conf->user_num == 2);
+    SS_CHECK(same(conf->users[0].id, "alice") && same(conf->users[0].key, "a"));
+    SS_CHECK(same(conf->users[1].id, "bob") && same(conf->users[1].key, "b"));
+    SS_CHECK(conf->anon_limits_set == 1);
+    SS_CHECK(conf->anon_max_tcp_connections == 20);
+    SS_CHECK(conf->anon_max_udp_sessions == 21);
+    SS_CHECK(conf->anon_upload_kbps == 1024);
+    SS_CHECK(same(conf->control_socket, "/tmp/ss.sock"));
+    SS_CHECK(conf->access_log == 1);
 
     // A second read replaces the first one.
     write_config(path, "{\"server\":\"10.0.0.1:1\",\"method\":\"aes-256-gcm\",\"password\":\"x\"}");

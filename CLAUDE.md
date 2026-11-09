@@ -120,6 +120,8 @@ runs them.
 (Shadowsocks 2022, BLAKE3 from `src/blake3`), `keys.cpp`
 (key derivation, method tables). The old C implementation lives in `tests/reference/` as a test oracle.
 
+**SIP023 users:** `src/crypto/aead2022.*` implements identity headers; `relay/codec.*` maps user hashes to keys; `relay/users.hpp` holds per-user counters; `relay/limiter.*` enforces anonymous per-IP limits. `src/control.*` and `src/ssctl.cpp` provide the local read-only `ssctl` query socket.
+
 **ACL:** `acl.cpp` / `rule.cpp` / `ipset.cpp` - IP prefix sets and PCRE2/literal domain rules.
 
 **Plugins:** `plugin.cpp` / `process.cpp` - SIP003 plugin subprocess management.

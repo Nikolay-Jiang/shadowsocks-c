@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 
@@ -89,6 +90,22 @@ bool original_destination(ss_socket_t, bool, sockaddr_storage &) noexcept
 }
 #endif
 
+void peer_endpoint(const sockaddr_storage &addr, char *out, std::size_t size) noexcept
+{
+    char ip[INET6_ADDRSTRLEN] = {};
+    if (addr.ss_family == AF_INET) {
+        const auto *in = reinterpret_cast<const sockaddr_in *>(&addr);
+        ss_inet_ntop(AF_INET, &in->sin_addr, ip, sizeof(ip));
+        std::snprintf(out, size, "%s:%u", ip, ntohs(in->sin_port));
+    } else if (addr.ss_family == AF_INET6) {
+        const auto *in = reinterpret_cast<const sockaddr_in6 *>(&addr);
+        ss_inet_ntop(AF_INET6, &in->sin6_addr, ip, sizeof(ip));
+        std::snprintf(out, size, "[%s]:%u", ip, ntohs(in->sin6_port));
+    } else {
+        std::snprintf(out, size, "-");
+    }
+}
+
 void peer_name(ss_socket_t fd, char *out, std::size_t size) noexcept
 {
     out[0] = '\0';
@@ -152,6 +169,7 @@ Status TcpRelay::init(event::Loop &loop, Method &method, const TcpConfig &config
     connect_list_.set_timeout(std::min<std::uint64_t>(MAX_CONNECT_TIMEOUT, timeout) * 1000);
     idle_list_.set_timeout(std::max<std::uint64_t>(MIN_TCP_IDLE_TIMEOUT, timeout) * 1000);
     SS_TRY(timer_.open(loop, *this));
+    SS_TRY(rate_timer_.open(loop, *this));
     own_closed_ = false;
     LOGI("tcp: up to %u connections (%zu KiB each, plus two %zu KiB buffers leased while data is in flight)",
          config.max_connections, sizeof(Connection) / 1024, sizeof(RelayBuffer) / 1024);
@@ -181,7 +199,9 @@ Flow TcpRelay::Listener::on_ready(int) noexcept
 void TcpRelay::accept_from(Listener &listener) noexcept
 {
     for (int i = 0; i < kAcceptBurst && !shutting_down_; ++i) {
-        ss_socket_t fd = ss_accept(listener.poll.fd(), nullptr, nullptr);
+        sockaddr_storage peer{};
+        socklen_t peer_len = sizeof(peer);
+        ss_socket_t fd = ss_accept(listener.poll.fd(), reinterpret_cast<sockaddr *>(&peer), &peer_len);
 #ifdef _WIN32
         if (fd == INVALID_SOCKET) {
 #else
@@ -219,16 +239,33 @@ void TcpRelay::accept_from(Listener &listener) noexcept
             return;
         }
         if (config_.kind == Kind::server && config_.acl) {
-            char peer[INET6_ADDRSTRLEN];
-            peer_name(fd, peer, sizeof(peer));
-            if (peer[0] != '\0' && config_.acl_hooks.peer_denied(peer)) {
-                LOGE("Access denied from %s", peer);
+            char peer_text[INET6_ADDRSTRLEN];
+            peer_name(fd, peer_text, sizeof(peer_text));
+            if (peer_text[0] != '\0' && config_.acl_hooks.peer_denied(peer_text)) {
+                LOGE("Access denied from %s", peer_text);
                 ss_socket_close(fd);
                 continue;
             }
         }
+        if (config_.kind == Kind::server && config_.limiter != nullptr
+            && !config_.limiter->begin_handshake(reinterpret_cast<const sockaddr *>(&peer), loop_->now())) {
+            char peer_text[INET6_ADDRSTRLEN] = {};
+            if (peer.ss_family == AF_INET) {
+                ss_inet_ntop(AF_INET, &reinterpret_cast<sockaddr_in *>(&peer)->sin_addr, peer_text,
+                             sizeof(peer_text));
+            } else if (peer.ss_family == AF_INET6) {
+                ss_inet_ntop(AF_INET6, &reinterpret_cast<sockaddr_in6 *>(&peer)->sin6_addr, peer_text,
+                             sizeof(peer_text));
+            }
+            LOGE("anonymous pre-authentication limit reached for %s", peer_text);
+            ss_socket_close(fd);
+            continue;
+        }
         auto conn = pool_.acquire(*this);
         if (!conn) {
+            if (config_.kind == Kind::server && config_.limiter != nullptr) {
+                config_.limiter->end_handshake(reinterpret_cast<const sockaddr *>(&peer));
+            }
             ss_socket_close(fd);
             return;
         }
@@ -236,6 +273,9 @@ void TcpRelay::accept_from(Listener &listener) noexcept
         std::uint32_t at = pool_.handle_of(&c).index;
         owners_[at]     = std::move(*conn);
         c.tos_          = listener.tos;
+        c.peer_         = peer;
+        c.started_ms_   = loop_->now();
+        c.handshake_counted_ = config_.limiter != nullptr && config_.kind == Kind::server;
         (void)c.start(fd);
     }
 }
@@ -334,6 +374,40 @@ void TcpRelay::on_timer() noexcept
     schedule();
 }
 
+void TcpRelay::wake_throttled() noexcept
+{
+    if (config_.limiter == nullptr) {
+        return;
+    }
+    bool remaining = false;
+    const std::uint64_t now = loop_->now();
+    for (auto &owner : owners_) {
+        if (!owner) {
+            continue;
+        }
+        Connection &conn = *owner;
+        if (!conn.throttled_ || !conn.is_anonymous()) {
+            continue;
+        }
+        std::size_t budget = config_.limiter->budget(reinterpret_cast<const sockaddr *>(&conn.peer_), 1, true, now);
+        if (budget != 0) {
+            conn.throttled_ = false;
+            conn.update_interest();
+        } else {
+            remaining = true;
+        }
+    }
+    if (!remaining) {
+        rate_timer_.stop();
+        rate_timer_active_ = false;
+    }
+}
+
+void TcpRelay::on_rate_timer() noexcept
+{
+    wake_throttled();
+}
+
 void TcpRelay::schedule() noexcept
 {
     std::uint64_t due = accept_retry_at_;
@@ -388,7 +462,9 @@ void TcpRelay::shutdown() noexcept
     for (std::size_t i = 0; i < listener_count_; ++i) {
         listeners_[i].poll.close(closer_);
     }
+    rate_timer_.stop();
     timer_.close(closer_);
+    rate_timer_.close(closer_);
     closer_.seal();
 }
 
@@ -406,6 +482,19 @@ bool Connection::client_kind() const noexcept
 
 void Connection::begin_close(CloseCompletion done) noexcept
 {
+    if (relay_->config_.users != nullptr && user_counted_) {
+        relay_->config_.users->close(user_index_, true);
+        user_counted_ = false;
+    }
+    if (relay_->config_.limiter != nullptr && relay_->config_.kind == Kind::server) {
+        if (handshake_counted_) {
+            relay_->config_.limiter->end_handshake(reinterpret_cast<const sockaddr *>(&peer_));
+            handshake_counted_ = false;
+        } else if (anonymous_counted_) {
+            relay_->config_.limiter->close_tcp(reinterpret_cast<const sockaddr *>(&peer_), true);
+            anonymous_counted_ = false;
+        }
+    }
     if (hook_state_ != nullptr && relay_->config_.release != nullptr) {
         relay_->config_.release(hook_state_);
         hook_state_ = nullptr;
@@ -479,7 +568,10 @@ Flow Connection::start(ss_socket_t fd) noexcept
         target_header_len_ = cfg.tunnel_target_len;
         break;
     case Kind::server: {
-        if (!dec_.init(*relay_->method_, false, nullptr) || !enc_.init(*relay_->method_, false, &dec_)) {
+        // The response encoder needs the user key the request decryptor
+        // selects from its optional identity header, so it is initialised
+        // after the first request header has been decoded.
+        if (!dec_.init(*relay_->method_, false, nullptr)) {
             return close();
         }
         stage_ = Stage::header;
@@ -920,6 +1012,38 @@ Flow Connection::server_header() noexcept
         server_reject("invalid address type");
         return Flow::proceed;
     }
+    if (!enc_ready_) {
+        if (!dec_.header_received() || !enc_.init(*relay_->method_, false, &dec_)) {
+            return close();
+        }
+        enc_ready_ = true;
+    }
+    const std::uint64_t now = relay_->loop_->now();
+    user_index_             = dec_.selected_user();
+    const bool anonymous    = is_anonymous();
+    if (cfg.limiter != nullptr && handshake_counted_) {
+        handshake_counted_ = false;
+        if (!cfg.limiter->authenticate(reinterpret_cast<const sockaddr *>(&peer_), anonymous, now)) {
+            server_reject("anonymous connection limit");
+            return Flow::proceed;
+        }
+        anonymous_counted_ = anonymous;
+    }
+    if (cfg.users != nullptr && !user_counted_) {
+        cfg.users->open(user_index_, true, now);
+        cfg.users->add_tx(user_index_, conn_tx_, now);
+        user_counted_ = true;
+    }
+    if (cfg.access_log) {
+        char peer_text[128] = {};
+        peer_endpoint(peer_, peer_text, sizeof(peer_text));
+        const char *uid = anonymous ? "anonymous" : relay_->method_->user_id(user_index_);
+        if (target_.type == 4) {
+            LOGI("user=%s peer=%s proto=tcp target=[%s]:%u", uid, peer_text, target_.host, target_.port);
+        } else {
+            LOGI("user=%s peer=%s proto=tcp target=%s:%u", uid, peer_text, target_.host, target_.port);
+        }
+    }
     (void)to_upstream_.consume(target_.length); // the rest is the first payload
     bool is_name = target_.type == 3;
     if (is_name) {
@@ -1044,6 +1168,7 @@ Connection::Pull Connection::pull(ss_socket_t fd, bool decode, LeasedBuffer &dst
 Connection::Pull Connection::pull_into(ss_socket_t fd, bool decode, LeasedBuffer &dst,
                                        std::uint64_t *counter) noexcept
 {
+    const TcpConfig &cfg = relay_->config_;
     dst.compact();
     auto out = bytes_of(dst.writable());
     if (out.empty() && !dst.leased()) {
@@ -1067,6 +1192,19 @@ Connection::Pull Connection::pull_into(ss_socket_t fd, bool decode, LeasedBuffer
     if (limit == 0) {
         return Pull::again;
     }
+    if (fd == client_.fd() && stage_ == Stage::stream && cfg.limiter != nullptr && is_anonymous()) {
+        std::size_t budget = cfg.limiter->budget(reinterpret_cast<const sockaddr *>(&peer_), limit, true,
+                                                 relay_->loop_->now());
+        if (budget == 0) {
+            throttled_ = true;
+            if (!relay_->rate_timer_active_) {
+                relay_->rate_timer_active_ = true;
+                relay_->rate_timer_.start(50, 50);
+            }
+            return Pull::again;
+        }
+        limit = budget;
+    }
     auto r = recv_some(fd, { relay_->scratch_.data(), limit });
     if (!r) {
         switch (r.error().code) {
@@ -1081,11 +1219,25 @@ Connection::Pull Connection::pull_into(ss_socket_t fd, bool decode, LeasedBuffer
             return Pull::error;
         }
     }
-    const TcpConfig &cfg = relay_->config_;
+    const std::uint64_t now = relay_->loop_->now();
     if (counter != nullptr) {
         *counter += *r;
         if (cfg.on_traffic != nullptr) {
             cfg.on_traffic();
+        }
+    }
+    if (fd == client_.fd()) {
+        conn_tx_ += *r;
+        if (cfg.users != nullptr && user_counted_) {
+            cfg.users->add_tx(user_index_, *r, now);
+        }
+        if (cfg.limiter != nullptr && is_anonymous()) {
+            cfg.limiter->consume(reinterpret_cast<const sockaddr *>(&peer_), *r, true, now);
+        }
+    } else {
+        conn_rx_ += *r;
+        if (cfg.users != nullptr) {
+            cfg.users->add_rx(user_index_, *r, now);
         }
     }
     if (stage_ == Stage::stream) {
@@ -1234,7 +1386,8 @@ void Connection::update_interest() noexcept
         u = event::writable;
         break;
     case Stage::stream:
-        c = (to_upstream_.empty() && !client_eof_ ? event::readable : 0) | (to_client_.empty() ? 0 : event::writable);
+        c = (to_upstream_.empty() && !client_eof_ && !throttled_ ? event::readable : 0)
+            | (to_client_.empty() ? 0 : event::writable);
         u = (to_client_.empty() && !upstream_eof_ ? event::readable : 0) | (to_upstream_.empty() ? 0 : event::writable);
         break;
     }

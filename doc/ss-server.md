@@ -23,6 +23,16 @@ Options include all supported platform variants; restrictions are noted below.
 
 \snippet{doc} server.cpp cli-options
 
+\section ss_server_sip023 SIP023 USERS AND ANONYMOUS LIMITS
+
+The `users` configuration object maps user names to SIP023 user PSKs. Clients
+send the server PSK followed by the user PSK as their password
+(`BASE64_SERVER_PSK:BASE64_USER_PSK`). Clients that send only the server PSK
+are anonymous and are subject to `anonymous_limits` per IP. The optional
+`control_socket` path enables the read-only `ssctl(1)` query tool. See
+docs/sip023-users.md in the source tree for the complete configuration and
+client examples.
+
 \section ss_server_example EXAMPLE
 
 It is recommended to use a config file when starting ss-server(1).
@@ -59,6 +69,7 @@ ss-local(1),
 ss-tunnel(1),
 ss-redir(1),
 ss-manager(1),
+ssctl(1),
 shadowsocks-libev(8),
 iptables(8),
 /etc/shadowsocks-libev/config.json
