@@ -29,6 +29,8 @@ extern "C" {
 #define MAX_PORT_NUM 1024
 #define MAX_REMOTE_NUM 10
 #define MAX_DSCP_NUM 64
+#define MAX_USER_NUM 64
+#define MAX_USER_ID_LEN 64
 #define MAX_CONF_SIZE (128 * 1024)
 #define MAX_CONNECT_TIMEOUT 10
 #define MIN_TCP_IDLE_TIMEOUT (24 * 3600)
@@ -58,6 +60,11 @@ typedef struct {
     char *port;
     int dscp;
 } ss_dscp_t;
+
+typedef struct {
+    char *id;
+    char *key;
+} ss_user_t;
 
 typedef struct {
     int remote_num;
@@ -96,6 +103,18 @@ typedef struct {
     int max_udp_sessions;
     int max_dns_queries;
     int printable_salt;
+    int user_num;
+    ss_user_t users[MAX_USER_NUM];
+    char *control_socket;
+    int access_log;
+    int anon_limits_set;
+    int anon_max_tcp_connections;
+    int anon_max_udp_sessions;
+    int anon_preauth_connections;
+    int anon_upload_kbps;
+    int anon_burst_kb;
+    int anon_ipv6_prefix;
+    int anon_max_tracked_ips;
     int tcp_tproxy;
     char *workdir;
     char *acl;

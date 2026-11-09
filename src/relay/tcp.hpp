@@ -32,8 +32,10 @@
 #include "core/result.hpp"
 #include "event/loop.hpp"
 #include "relay/codec.hpp"
+#include "relay/limiter.hpp"
 #include "relay/resolver.hpp"
 #include "relay/socket.hpp"
+#include "relay/users.hpp"
 
 namespace ss::relay {
 
@@ -86,6 +88,9 @@ struct TcpConfig {
     std::uint64_t *tx = nullptr; // bytes received from clients
     std::uint64_t *rx = nullptr; // bytes received from upstreams
     void (*on_traffic)() = nullptr;
+    UserRegistry *users   = nullptr; // ss-server: SIP023 per-user counters
+    PeerLimiter *limiter  = nullptr; // ss-server: anonymous per-IP limits
+    bool access_log       = false;   // ss-server: log authenticated connects
     // ss-server: a client failed the handshake (logging, nftables).
     void (*report_failure)(ss_socket_t client, const char *reason) = nullptr;
     // ss-server --connmark-to-TOS: runs before each write to the client
@@ -170,6 +175,15 @@ public:
     void on_deadline() noexcept;
     void on_resolved(const sockaddr *address) noexcept;
 
+    // Control snapshots.
+    const sockaddr_storage &peer() const noexcept { return peer_; }
+    std::uint8_t user_index() const noexcept { return user_index_; }
+    bool is_anonymous() const noexcept { return user_index_ == crypto::kAnonymousIdentity; }
+    const SocksTarget &target() const noexcept { return target_; }
+    std::uint64_t started_ms() const noexcept { return started_ms_; }
+    std::uint64_t conn_tx() const noexcept { return conn_tx_; }
+    std::uint64_t conn_rx() const noexcept { return conn_rx_; }
+
 private:
     friend class TcpRelay;
 
@@ -237,13 +251,23 @@ private:
     bool dns_done_     = false;
     bool dns_ok_       = false;
     bool replied_      = false; // first upstream bytes reached the client
+    bool enc_ready_    = false; // server: response encoder built after auth
     // Half-close: one side has sent EOF, which went on to the other side as
     // a shutdown(SHUT_WR); the other direction keeps flowing until its EOF.
     bool client_eof_   = false;
     bool upstream_eof_ = false;
+    bool throttled_    = false;
     void *hook_state_  = nullptr;
     int tos_           = -1; // from the listener that accepted it
     sockaddr_storage dns_answer_{};
+    sockaddr_storage peer_{};
+    std::uint8_t user_index_ = crypto::kAnonymousIdentity;
+    bool handshake_counted_  = false;
+    bool anonymous_counted_  = false;
+    bool user_counted_       = false;
+    std::uint64_t started_ms_ = 0;
+    std::uint64_t conn_tx_    = 0;
+    std::uint64_t conn_rx_    = 0;
 };
 
 class TcpRelay {
@@ -268,6 +292,9 @@ public:
     std::uint32_t live() const noexcept { return pool_.live(); }
     std::uint64_t refused() const noexcept { return refused_; }
 
+    template <class F>
+    void for_each(F &&f);
+
 private:
     friend class Connection;
 
@@ -285,6 +312,8 @@ private:
     void set_deadline(Connection &conn, Connection::Timed which) noexcept;
     void clear_deadline(Connection &conn) noexcept;
     void on_timer() noexcept;
+    void on_rate_timer() noexcept;
+    void wake_throttled() noexcept;
     void schedule() noexcept;
     Status resolve(Connection &conn, const char *host, std::uint16_t port_be) noexcept;
     static void resolved(const ResolveCallback &cb, const sockaddr *address) noexcept;
@@ -315,7 +344,9 @@ private:
     event::DeadlineList<Connection> connect_list_;
     event::DeadlineList<Connection> idle_list_;
     event::Timer<TcpRelay, &TcpRelay::on_timer> timer_;
+    event::Timer<TcpRelay, &TcpRelay::on_rate_timer> rate_timer_;
     std::uint64_t timer_due_ = 0; // 0 when the timer is idle
+    bool rate_timer_active_  = false;
     event::CloseGroup closer_;
     bool shutting_down_ = false;
     bool own_closed_    = true;
@@ -323,6 +354,16 @@ private:
     // One receive at a time, shared by every connection.
     std::array<std::uint8_t, SOCKET_BUF_SIZE + kMaxSocksAddr + kHandshakeBuffer> scratch_{};
 };
+
+template <class F>
+void TcpRelay::for_each(F &&f)
+{
+    for (auto &owner : owners_) {
+        if (owner) {
+            f(*owner);
+        }
+    }
+}
 
 } // namespace ss::relay
 

@@ -443,6 +443,67 @@ void test_methods()
     SS_CHECK(!sc::Psk::from_base64(spec.value(), "not base64"));
 }
 
+void test_identity()
+{
+    for (const char *m : kMethods) {
+        if (std::strcmp(m, "2022-blake3-chacha20-poly1305") == 0) {
+            continue; // SIP023 identity headers are AES-only.
+        }
+        sc::Psk base = psk_of(m);
+        sc::Psk user = psk_of(m);
+        randombytes_buf(user.bytes.data(), user.size());
+        std::array<std::uint8_t, sc::kIdentityLen> hash{};
+        sc::identity_hash_16(user, hash);
+        sc::IdentityTable table;
+        SS_CHECK(table.reserve(sc::kMaxIdentityUsers, 7));
+        SS_CHECK(table.add(hash, user, 3));
+
+        std::uint8_t plain[sizeof(kAddr) + 2] = {};
+        std::memcpy(plain, kAddr, sizeof(kAddr));
+        plain[sizeof(kAddr)] = 'h';
+        plain[sizeof(kAddr) + 1] = 'i';
+        std::uint8_t wire[sizeof(plain) + 4096] = {};
+        std::uint8_t out[sizeof(plain) + 4096] = {};
+
+        sc::Aead2022TcpEncryptor cenc;
+        sc::Aead2022TcpDecryptor sdec;
+        sc::SaltPool pool;
+        SS_CHECK(pool.reserve(16, 11));
+        SS_CHECK(cenc.init(user, sc::Role::client, nullptr, &base));
+        SS_CHECK(sdec.init(base, sc::Role::server, {}, &pool, &table));
+        auto w = cenc.seal(plain, wire);
+        SS_CHECK(w);
+        auto step = sdec.decrypt({ wire, *w }, out);
+        SS_CHECK(step && step->produced == sizeof(plain));
+        SS_CHECK(sdec.selected_user() == 3);
+        SS_CHECK(std::memcmp(sdec.selected_key().key().data(), user.key().data(), user.size()) == 0);
+        SS_CHECK(std::memcmp(out, plain, sizeof(plain)) == 0);
+
+        // The same bytes without an identity header are anonymous.
+        sc::Aead2022TcpEncryptor anon_enc;
+        sc::Aead2022TcpDecryptor anon_dec;
+        SS_CHECK(anon_enc.init(base, sc::Role::client));
+        SS_CHECK(anon_dec.init(base, sc::Role::server, {}, &pool, &table));
+        w = anon_enc.seal(plain, wire);
+        SS_CHECK(w);
+        step = anon_dec.decrypt({ wire, *w }, out);
+        SS_CHECK(step && anon_dec.selected_user() == sc::kAnonymousIdentity);
+        SS_CHECK(std::memcmp(out, plain, sizeof(plain)) == 0);
+
+        sc::UdpSession2022 cs, ss2;
+        auto pkt_wire = sc::udp2022_seal(user, sc::Role::client, cs, plain, wire, &base);
+        SS_CHECK(pkt_wire);
+        auto pkt = sc::udp2022_decrypt(base, { wire, *pkt_wire }, out, &table);
+        SS_CHECK(pkt && pkt->user_index == 3);
+        SS_CHECK(sc::udp2022_accept(sc::Role::server, ss2, *pkt, out, std::time(nullptr)));
+        auto reply_wire = sc::udp2022_seal(user, sc::Role::server, ss2, { out, sizeof(plain) }, wire);
+        SS_CHECK(reply_wire);
+        auto reply = sc::udp2022_decrypt(user, { wire, *reply_wire }, out);
+        SS_CHECK(reply && sc::udp2022_accept(sc::Role::client, cs, *reply, out, std::time(nullptr)));
+        std::printf("ok identity %s\n", m);
+    }
+}
+
 void test_no_heap_in_steady_state()
 {
     sc::SaltPool pool;
@@ -464,6 +525,7 @@ int main()
 {
     SS_CHECK(sodium_init() != -1);
     SS_RUN(test_methods);
+    SS_RUN(test_identity);
     SS_RUN(test_no_heap_in_steady_state);
     return 0;
 }

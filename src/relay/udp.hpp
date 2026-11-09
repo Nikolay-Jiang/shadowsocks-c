@@ -58,6 +58,9 @@ struct UdpConfig {
     std::uint64_t *tx             = nullptr;
     std::uint64_t *rx             = nullptr;
     void (*on_traffic)()          = nullptr;
+    UserRegistry *users           = nullptr;
+    PeerLimiter *limiter          = nullptr;
+    bool access_log               = false;
     bool acl                      = false; // server: with `acl_hooks` set, as for TCP
     AclHooks acl_hooks;
 };
@@ -76,6 +79,7 @@ public:
 
     crypto::UdpSession2022 state;
     std::uint64_t last_used = 0;
+    std::uint8_t user_index = crypto::kAnonymousIdentity;
 
 private:
     UdpRelay *relay_;
@@ -90,6 +94,13 @@ public:
     void begin_close(CloseCompletion done) noexcept;
     event::Flow on_readable(int events) noexcept;
 
+    const sockaddr_storage &client() const noexcept { return client_; }
+    std::uint8_t user_index() const noexcept { return user_index_; }
+    bool is_anonymous() const noexcept { return user_index_ == crypto::kAnonymousIdentity; }
+    std::uint64_t started_ms() const noexcept { return started_ms_; }
+    std::uint64_t conn_tx() const noexcept { return conn_tx_; }
+    std::uint64_t conn_rx() const noexcept { return conn_rx_; }
+
 private:
     friend class UdpRelay;
 
@@ -103,6 +114,13 @@ private:
     std::uint8_t key_len_ = 0;
     crypto::UdpSession2022 client2022_;  // client kinds
     RefPtr<Shared2022> server2022_;      // server
+    std::uint8_t user_index_ = crypto::kAnonymousIdentity;
+    bool user_counted_       = false;
+    bool anonymous_counted_  = false;
+    bool logged_             = false;
+    std::uint64_t started_ms_ = 0;
+    std::uint64_t conn_tx_    = 0;
+    std::uint64_t conn_rx_    = 0;
 };
 
 class UdpRelay {
@@ -120,6 +138,16 @@ public:
     bool closed() const noexcept;
 
     std::uint32_t sessions() const noexcept { return sessions_.size(); }
+
+    template <class F>
+    void for_each(F &&f)
+    {
+        sessions_.for_each([&](const auto &, PoolPtr<UdpSession> &session) {
+            if (session) {
+                f(*session);
+            }
+        });
+    }
 
 private:
     friend class UdpSession;

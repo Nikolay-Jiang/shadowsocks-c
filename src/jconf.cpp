@@ -325,6 +325,14 @@ read_jconf(const char *file)
     static jconf_t conf;
 
     memset(&conf, 0, sizeof(jconf_t));
+    conf.access_log               = 0;
+    conf.anon_max_tcp_connections = 20;
+    conf.anon_max_udp_sessions    = 20;
+    conf.anon_preauth_connections = 40;
+    conf.anon_upload_kbps         = 1024;
+    conf.anon_burst_kb            = 2048;
+    conf.anon_ipv6_prefix         = 64;
+    conf.anon_max_tracked_ips     = 4096;
 
     json_value *obj;
 
@@ -412,6 +420,56 @@ read_jconf(const char *file)
                         }
                     }
                 }
+            } else if (strcmp(name, "users") == 0) {
+                if (value->type == json_object) {
+                    conf.user_num = 0;
+                    for (j = 0; j < value->u.object.length && conf.user_num < MAX_USER_NUM; j++) {
+                        json_value *v = value->u.object.values[j].value;
+                        if (v->type != json_string) {
+                            LOGE("ignoring the user entry for %s: the key must be a string",
+                                 value->u.object.values[j].name);
+                            continue;
+                        }
+                        const char *id = value->u.object.values[j].name;
+                        if (strlen(id) == 0 || strlen(id) >= MAX_USER_ID_LEN) {
+                            LOGE("ignoring invalid user id");
+                            continue;
+                        }
+                        int k = conf.user_num++;
+                        conf.users[k].id  = conf_strndup(
+                            std::string_view(id, value->u.object.values[j].name_length));
+                        conf.users[k].key = to_string(v);
+                    }
+                }
+            } else if (strcmp(name, "anonymous_limits") == 0) {
+                if (value->type == json_object) {
+                    conf.anon_limits_set = 1;
+                    for (j = 0; j < value->u.object.length; j++) {
+                        const char *opt = value->u.object.values[j].name;
+                        json_value *v   = value->u.object.values[j].value;
+                        if (strcmp(opt, "max_tcp_connections_per_ip") == 0) {
+                            conf.anon_max_tcp_connections = to_nonnegative_int(v, opt);
+                        } else if (strcmp(opt, "max_udp_sessions_per_ip") == 0) {
+                            conf.anon_max_udp_sessions = to_nonnegative_int(v, opt);
+                        } else if (strcmp(opt, "preauth_connections_per_ip") == 0) {
+                            conf.anon_preauth_connections = to_nonnegative_int(v, opt);
+                        } else if (strcmp(opt, "upload_kbps_per_ip") == 0) {
+                            conf.anon_upload_kbps = to_nonnegative_int(v, opt);
+                        } else if (strcmp(opt, "burst_kb") == 0) {
+                            conf.anon_burst_kb = to_nonnegative_int(v, opt);
+                        } else if (strcmp(opt, "ipv6_prefix") == 0) {
+                            conf.anon_ipv6_prefix = to_nonnegative_int(v, opt);
+                        } else if (strcmp(opt, "max_tracked_ips") == 0) {
+                            conf.anon_max_tracked_ips = to_nonnegative_int(v, opt);
+                        }
+                    }
+                }
+            } else if (strcmp(name, "control_socket") == 0) {
+                conf.control_socket = to_string(value);
+            } else if (strcmp(name, "access_log") == 0) {
+                check_json_value_type(value, json_boolean,
+                                      "invalid config file: option 'access_log' must be a boolean");
+                conf.access_log = value->u.boolean;
             } else if (strcmp(name, "server_port") == 0) {
                 conf.remote_port = to_string(value);
             } else if (strcmp(name, "local_address") == 0) {

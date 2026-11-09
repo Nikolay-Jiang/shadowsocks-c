@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cstring>
 
+#include <sodium.h>
+
 #include "crypto/keys.hpp"
 #include "ppbloom.h"
 #include "utils.h"
@@ -40,11 +42,44 @@ Status Method::init(const char *method, const char *password, const char *key, R
         bloom_ready_ = true;
     }
     if (auto spec = crypto::find_aead2022(method)) {
+        const char *secret = key != nullptr ? key : password;
+        if (secret == nullptr) {
+            return fail(Errc::config);
+        }
+        // A SIP023 client password is "base PSK:user PSK". The base PSK is
+        // the identity key; the user PSK is the traffic key. A server takes
+        // the base PSK here and gets user keys from add_user().
+        const char *colon = role == Role::client ? std::strchr(secret, ':') : nullptr;
+        if (colon != nullptr) {
+            constexpr std::size_t kMaxPskText = 128;
+            char base[kMaxPskText];
+            char user[kMaxPskText];
+            std::size_t base_len = static_cast<std::size_t>(colon - secret);
+            std::size_t user_len = std::strlen(colon + 1);
+            if (base_len == 0 || base_len >= kMaxPskText || user_len == 0 || user_len >= kMaxPskText) {
+                return fail(Errc::config);
+            }
+            std::memcpy(base, secret, base_len);
+            base[base_len] = '\0';
+            std::memcpy(user, colon + 1, user_len + 1);
+            auto base_psk = crypto::Psk::from_base64(*spec, base);
+            auto user_psk = crypto::Psk::from_base64(*spec, user);
+            if (!base_psk || !user_psk) {
+                crypto::report_bad_key("pre-shared key", spec->aead.key_len);
+                return fail(Errc::config);
+            }
+            key_         = *user_psk;
+            identity_psk_ = *base_psk;
+            return {};
+        }
         // The password field may carry the base64 PSK too.
-        auto psk = crypto::Psk::from_base64(*spec, key != nullptr ? key : password);
+        auto psk = crypto::Psk::from_base64(*spec, secret);
         if (!psk) {
             crypto::report_bad_key("pre-shared key", spec->aead.key_len);
             return fail(psk.error());
+        }
+        if (role == Role::server && !psk->chacha()) {
+            SS_TRY(identities_.reserve(crypto::kMaxIdentityUsers, randombytes_random()));
         }
         key_ = *psk;
         return {};
@@ -89,6 +124,40 @@ Method::~Method()
     }
 }
 
+Status Method::add_user(const char *id, const char *key) noexcept
+{
+    if (role_ != Role::server || id == nullptr || key == nullptr || !is_2022_aes()
+        || user_count_ >= crypto::kMaxIdentityUsers) {
+        return fail(Errc::config);
+    }
+    std::size_t id_len = std::strlen(id);
+    if (id_len == 0 || id_len >= sizeof(users_[0].id)) {
+        return fail(Errc::config);
+    }
+    const crypto::Psk *base = psk();
+    if (base == nullptr) {
+        return fail(Errc::config);
+    }
+    auto user = crypto::Psk::from_base64(base->spec, key);
+    if (!user) {
+        crypto::report_bad_key("user pre-shared key", base->spec.aead.key_len);
+        return fail(Errc::config);
+    }
+    std::array<std::uint8_t, crypto::kIdentityLen> hash{};
+    crypto::identity_hash_16(*user, hash);
+    auto index = static_cast<std::uint8_t>(user_count_);
+    SS_TRY(identities_.add(hash, *user, index));
+    std::memcpy(users_[index].id, id, id_len + 1);
+    users_[index].used = true;
+    ++user_count_;
+    return {};
+}
+
+const char *Method::user_id(std::uint8_t index) const noexcept
+{
+    return index < user_count_ && users_[index].used ? users_[index].id : "";
+}
+
 Status Encoder::init(Method &method, bool plain, const Decoder *peer, bool printable_salt) noexcept
 {
     if (plain) {
@@ -101,7 +170,15 @@ Status Encoder::init(Method &method, bool plain, const Decoder *peer, bool print
     }
     if (auto *psk = std::get_if<crypto::Psk>(&method.key_)) {
         const crypto::Aead2022TcpDecryptor *request = peer != nullptr ? peer->as_2022() : nullptr;
-        return impl_.emplace<crypto::Aead2022TcpEncryptor>().init(*psk, method.role_, request);
+        if (method.role_ == Role::server) {
+            if (request == nullptr || !request->identity_resolved()) {
+                return fail(Errc::invalid);
+            }
+            return impl_.emplace<crypto::Aead2022TcpEncryptor>().init(request->selected_key(), Role::server, request,
+                                                                      nullptr);
+        }
+        return impl_.emplace<crypto::Aead2022TcpEncryptor>().init(*psk, Role::client, request,
+                                                                  method.identity_psk());
     }
     return fail(Errc::config);
 }
@@ -161,9 +238,34 @@ Status Decoder::init(Method &method, bool plain, const Encoder *peer) noexcept
             }
             return impl_.emplace<crypto::Aead2022TcpDecryptor>().init(*psk, Role::client, peer->salt_2022());
         }
-        return impl_.emplace<crypto::Aead2022TcpDecryptor>().init(*psk, Role::server, {}, &method.salt_pool_);
+        return impl_.emplace<crypto::Aead2022TcpDecryptor>().init(*psk, Role::server, {}, &method.salt_pool_,
+                                                                   method.identity_table());
     }
     return fail(Errc::config);
+}
+
+std::uint8_t Decoder::selected_user() const noexcept
+{
+    if (auto *d = std::get_if<crypto::Aead2022TcpDecryptor>(&impl_)) {
+        return d->selected_user();
+    }
+    return crypto::kAnonymousIdentity;
+}
+
+const crypto::Psk *Decoder::selected_key() const noexcept
+{
+    if (auto *d = std::get_if<crypto::Aead2022TcpDecryptor>(&impl_)) {
+        return &d->selected_key();
+    }
+    return nullptr;
+}
+
+bool Decoder::header_received() const noexcept
+{
+    if (auto *d = std::get_if<crypto::Aead2022TcpDecryptor>(&impl_)) {
+        return d->header_received();
+    }
+    return true;
 }
 
 std::size_t Decoder::accept_limit() const noexcept

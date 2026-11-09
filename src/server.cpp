@@ -41,6 +41,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <pwd.h>
 #include <sys/un.h>
 #endif
 #include "core.h"
@@ -80,6 +81,9 @@ enum datatypes {
 #endif
 
 #include "core/heap_guard.hpp"
+#ifndef __MINGW32__
+#include "control.hpp"
+#endif
 #include "event/program.hpp"
 #include "relay/tcp.hpp"
 #include "relay/udp.hpp"
@@ -133,6 +137,22 @@ static int max_connections  = 0;
 static int max_udp_sessions = 0;
 static int max_dns_queries  = 0;
 static int ret_val   = 0;
+
+static int anon_limits_set          = 0;
+static int anon_max_tcp_connections = 20;
+static int anon_max_udp_sessions    = 20;
+static int anon_preauth_connections = 40;
+static int anon_upload_kbps         = 1024;
+static int anon_burst_kb            = 2048;
+static int anon_ipv6_prefix         = 64;
+static int anon_max_tracked_ips     = 4096;
+static int access_log               = 0;
+static int access_log_set           = 0;
+static char *control_socket         = NULL;
+static int user_num                 = 0;
+static ss_user_t users[MAX_USER_NUM];
+static ss::relay::UserRegistry user_registry;
+static ss::relay::PeerLimiter peer_limiter;
 
 #ifdef HAVE_SETRLIMIT
 static int nofile = 0;
@@ -896,6 +916,16 @@ Prefer IPv6 DNS results; overrides configuration. This does not restrict connect
 Same behavior as `-v`; see that option for details. Short alias: `-v`.
 [cli_long_verbose] */
 
+/* [cli_long_control_socket]
+\par `--control-socket <path>`
+Enable the local read-only control socket queried by ssctl(1).
+[cli_long_control_socket] */
+
+/* [cli_long_access_log]
+\par `--access-log`
+Log authenticated connections with the SIP023 user ID, peer address and destination.
+[cli_long_access_log] */
+
 /* [cli_long_listen_address]
 \par `--listen-address <server_host>`
 Set the listening address. Server and manager addresses may be repeated. Short alias: `-s`.
@@ -950,6 +980,8 @@ Same behavior as `-d`; see that option for details. Short alias: `-d`.
 \snippet{doc} server.cpp cli_long_udp_only
 \snippet{doc} server.cpp cli_long_ipv6_first
 \snippet{doc} server.cpp cli_long_verbose
+\snippet{doc} server.cpp cli_long_control_socket
+\snippet{doc} server.cpp cli_long_access_log
 \snippet{doc} server.cpp cli_long_listen_address
 \snippet{doc} server.cpp cli_long_listen_port
 \snippet{doc} server.cpp cli_long_outbound_address
@@ -1011,6 +1043,8 @@ Same behavior as `-d`; see that option for details. Short alias: `-d`.
         { "acl",             required_argument, NULL, GETOPT_VAL_ACL         },
         { "manager-address", required_argument, NULL,
           GETOPT_VAL_MANAGER_ADDRESS },
+        { "control-socket",  required_argument, NULL, GETOPT_VAL_CONTROL_SOCKET },
+        { "access-log",      no_argument,       NULL, GETOPT_VAL_ACCESS_LOG },
         { "mtu",             required_argument, NULL, GETOPT_VAL_MTU         },
         { "help",            no_argument,       NULL, GETOPT_VAL_HELP        },
         { "plugin",          required_argument, NULL, GETOPT_VAL_PLUGIN      },
@@ -1078,6 +1112,13 @@ Same behavior as `-d`; see that option for details. Short alias: `-d`.
             break;
         case GETOPT_VAL_MANAGER_ADDRESS:
             manager_addr = optarg;
+            break;
+        case GETOPT_VAL_CONTROL_SOCKET:
+            control_socket = optarg;
+            break;
+        case GETOPT_VAL_ACCESS_LOG:
+            access_log     = 1;
+            access_log_set = 1;
             break;
         case GETOPT_VAL_MTU:
             if (ss_parse_int(optarg, 0, INT_MAX, &mtu) == -1) {
@@ -1277,6 +1318,24 @@ Same behavior as `-d`; see that option for details. Short alias: `-d`.
         if (max_dns_queries == 0) {
             max_dns_queries = conf->max_dns_queries;
         }
+        if (control_socket == NULL) {
+            control_socket = conf->control_socket;
+        }
+        if (!access_log_set) {
+            access_log = conf->access_log;
+        }
+        anon_limits_set          = conf->anon_limits_set;
+        anon_max_tcp_connections = conf->anon_max_tcp_connections;
+        anon_max_udp_sessions    = conf->anon_max_udp_sessions;
+        anon_preauth_connections = conf->anon_preauth_connections;
+        anon_upload_kbps         = conf->anon_upload_kbps;
+        anon_burst_kb            = conf->anon_burst_kb;
+        anon_ipv6_prefix         = conf->anon_ipv6_prefix;
+        anon_max_tracked_ips     = conf->anon_max_tracked_ips;
+        user_num                 = conf->user_num;
+        for (i = 0; i < user_num; ++i) {
+            users[i] = conf->users[i];
+        }
         if (reuse_port == 0) {
             reuse_port = conf->reuse_port;
         }
@@ -1469,8 +1528,27 @@ Same behavior as `-d`; see that option for details. Short alias: `-d`.
     ss::relay::Method relay_method;
     if (!relay_method.init(method, password, key, ss::crypto::Role::server))
         FATAL("failed to initialize ciphers");
+    for (int i = 0; i < user_num; ++i) {
+        if (!relay_method.add_user(users[i].id, users[i].key)) {
+            FATAL("failed to add a SIP023 user (users require 2022-blake3-aes-128/256-gcm)");
+        }
+    }
     if (relay_method.is_2022() && !relay_method.reserve_salt_pool(65536, randombytes_random()))
         FATAL("failed to set up the AEAD-2022 salt pool");
+    user_registry.set_count(relay_method.user_count());
+    const bool limits_enabled = relay_method.user_count() != 0 || anon_limits_set != 0;
+    if (limits_enabled) {
+        ss::relay::AnonymousLimits limits;
+        limits.max_tcp_per_ip  = anon_max_tcp_connections;
+        limits.max_udp_per_ip  = anon_max_udp_sessions;
+        limits.preauth_per_ip  = anon_preauth_connections;
+        limits.upload_kbps     = anon_upload_kbps;
+        limits.burst_kb        = anon_burst_kb;
+        limits.ipv6_prefix     = anon_ipv6_prefix;
+        limits.max_tracked_ips = anon_max_tracked_ips;
+        if (!peer_limiter.init(limits, randombytes_random()))
+            FATAL("failed to set up the anonymous limits");
+    }
 
     // initialize ev loop
 
@@ -1543,7 +1621,13 @@ Same behavior as `-d`; see that option for details. Short alias: `-d`.
     ss::relay::Resolver tcp_resolver;
     ss::relay::TcpRelay tcp_relay;
     ss::relay::UdpRelay udp_relay;
+#ifndef __MINGW32__
+    ss::relay::ControlServer control_server;
+#endif
     bool tcp_running = false;
+#ifndef __MINGW32__
+    bool control_running = false;
+#endif
     if (max_dns_queries == 0)
         max_dns_queries = (max_connections > 0 ? max_connections : DEFAULT_MAX_CONNECTIONS) + 64;
     if (!tcp_resolver.init(tcp_loop, nameservers, ipv6first != 0, max_dns_queries)) {
@@ -1573,6 +1657,9 @@ Same behavior as `-d`; see that option for details. Short alias: `-d`.
         }
         tcp_config.tx             = &tx;
         tcp_config.rx             = &rx;
+        tcp_config.users          = &user_registry;
+        tcp_config.limiter        = limits_enabled ? &peer_limiter : nullptr;
+        tcp_config.access_log     = access_log != 0;
         tcp_config.report_failure = &report_failure;
 #ifdef USE_NFCONNTRACK_TOS
         tcp_config.downstream = &setTosFromConnmark;
@@ -1637,6 +1724,9 @@ Same behavior as `-d`; see that option for details. Short alias: `-d`.
         udp_config.label        = remote_port != NULL ? remote_port : "";
         udp_config.tx           = &tx;
         udp_config.rx           = &rx;
+        udp_config.users        = &user_registry;
+        udp_config.limiter      = limits_enabled ? &peer_limiter : nullptr;
+        udp_config.access_log   = access_log != 0;
         udp_config.acl          = acl != 0;
         udp_config.acl_hooks.match_host       = &acl_match_host;
         udp_config.acl_hooks.mode             = &get_acl_mode;
@@ -1674,6 +1764,33 @@ Same behavior as `-d`; see that option for details. Short alias: `-d`.
             FATAL("failed to listen on any address");
         }
     }
+
+#ifndef __MINGW32__
+    if (control_socket != NULL) {
+        ss::relay::ControlData control_data;
+        control_data.method  = &relay_method;
+        control_data.users   = &user_registry;
+        control_data.limiter = limits_enabled ? &peer_limiter : nullptr;
+        control_data.tcp     = &tcp_relay;
+        control_data.udp     = &udp_relay;
+        control_data.tx      = &tx;
+        control_data.rx      = &rx;
+        if (!control_server.start(tcp_loop, control_socket, control_data)) {
+            FATAL("failed to start the control socket");
+        }
+        if (user != NULL) {
+            struct passwd *pw = getpwnam(user);
+            if (pw != NULL) {
+                (void)chown(control_socket, pw->pw_uid, pw->pw_gid);
+            }
+        }
+        control_running = true;
+    }
+#else
+    if (control_socket != NULL) {
+        LOGE("--control-socket is not supported on Windows; ignored");
+    }
+#endif
 
 #ifdef __MINGW32__
     if (manager_addr != NULL) {
@@ -1721,6 +1838,14 @@ Same behavior as `-d`; see that option for details. Short alias: `-d`.
     {
         static bool resolver_closed;
         resolver_closed = false;
+#ifndef __MINGW32__
+        if (control_running) {
+            control_server.shutdown();
+            while (!control_server.closed()) {
+                tcp_loop.run_nowait();
+            }
+        }
+#endif
         tcp_relay.shutdown();
         udp_relay.shutdown();
         tcp_resolver.shutdown(ss::CloseCompletion([](void *, uint32_t) { resolver_closed = true; }, NULL, 0));

@@ -45,6 +45,7 @@ endif()
 set(SS_RELAY_SOURCE
         core/heap_guard.cpp
         relay/codec.cpp
+        relay/limiter.cpp
         relay/socket.cpp
         relay/tcp.cpp
         relay/udp.cpp
@@ -96,6 +97,9 @@ set(SS_SERVER_SOURCE
         ${SS_PLUGIN_SOURCE}
         ${SS_ACL_SOURCE}
         )
+if(NOT MINGW)
+    list(APPEND SS_SERVER_SOURCE control.cpp)
+endif()
 
 set(SS_MANAGER_SOURCE
         ${SS_SHARED_SOURCES}
@@ -146,6 +150,11 @@ if(SS_BUILD_EXECUTABLES)
             message(FATAL_ERROR "ss-redir requires Linux")
         endif()
         ss_program(ss-redir MODULE_REDIR "${SS_REDIR_SOURCE}")
+    endif()
+    if(NOT MINGW)
+        add_executable(ssctl ssctl.cpp)
+        ss_project_options(ssctl)
+        install(TARGETS ssctl RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     endif()
 endif()
 

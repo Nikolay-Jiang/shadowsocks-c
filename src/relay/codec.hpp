@@ -7,8 +7,10 @@
 // live is chosen per connection, because a connection that bypasses the
 // proxy (ACL) is plain.
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <variant>
 
@@ -41,8 +43,17 @@ public:
     const crypto::MasterKey *aead() const noexcept { return std::get_if<crypto::MasterKey>(&key_); }
     const crypto::Psk *psk() const noexcept { return std::get_if<crypto::Psk>(&key_); }
     bool is_2022() const noexcept { return std::holds_alternative<crypto::Psk>(key_); }
+    bool is_2022_aes() const noexcept { return psk() != nullptr && !psk()->chacha(); }
     // Room a first seal() needs on top of the plaintext.
     static constexpr std::size_t kMaxOverhead = 2048;
+
+    // SIP023 users (server). IDs are stored in the same order as the
+    // identity table indexes the relay statistics use.
+    Status add_user(const char *id, const char *key) noexcept;
+    std::uint32_t user_count() const noexcept { return user_count_; }
+    const char *user_id(std::uint8_t index) const noexcept;
+    const crypto::IdentityTable *identity_table() const noexcept { return &identities_; }
+    const crypto::Psk *identity_psk() const noexcept { return identity_psk_ ? &*identity_psk_ : nullptr; }
 
     // AEAD-2022 servers remember every request salt for a minute.
     Status reserve_salt_pool(std::uint32_t capacity, std::uint64_t seed) noexcept
@@ -55,9 +66,18 @@ private:
     friend class Decoder;
 
     using Key = std::variant<crypto::MasterKey, crypto::Psk>;
+    struct UserEntry {
+        char id[65] = {};
+        bool used   = false;
+    };
+
     Key key_{};
-    Role role_        = Role::client;
-    bool bloom_ready_ = false;
+    std::optional<crypto::Psk> identity_psk_;
+    crypto::IdentityTable identities_;
+    std::array<UserEntry, crypto::kMaxIdentityUsers> users_{};
+    std::uint32_t user_count_ = 0;
+    Role role_                = Role::client;
+    bool bloom_ready_         = false;
     crypto::SaltPool salt_pool_;
 };
 
@@ -99,6 +119,10 @@ public:
     {
         return std::get_if<crypto::Aead2022TcpDecryptor>(&impl_);
     }
+    // SIP023: set once the request identity (or its absence) is known.
+    std::uint8_t selected_user() const noexcept;
+    const crypto::Psk *selected_key() const noexcept;
+    bool header_received() const noexcept;
 
     static constexpr std::size_t kMinOutput = crypto::kMaxChunk;
 
