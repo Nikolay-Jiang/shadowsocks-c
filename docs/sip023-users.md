@@ -88,8 +88,9 @@ With this option, a TCP connection or UDP datagram without a known SIP023
 identity is rejected. The server PSK is still part of the client password
 (`SERVER_PSK:USER_PSK`), but it cannot be used on its own.
 
-`require_identity` requires an AES-2022 method and at least one user. It is a
-startup option; changing it requires restarting the server.
+`require_identity` requires an AES-2022 method. An empty `users` object is
+allowed and rejects every client until a user is added. It is a startup
+option; changing it requires restarting the server.
 
 ## Users-only reload
 

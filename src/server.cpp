@@ -365,10 +365,6 @@ reload_users(char *out, std::size_t capacity) noexcept
     if (doc_require_identity != runtime.require_identity) {
         return error("restart_required field=require_identity");
     }
-    if (doc_require_identity && conf.user_num == 0) {
-        return error("invalid_users require_identity with no users");
-    }
-
     if (conf.user_num > static_cast<int>(ss::crypto::kMaxIdentityUsers)) {
         return error("invalid_users too many users");
     }
@@ -1771,8 +1767,8 @@ Same behavior as `-d`; see that option for details. Short alias: `-d`.
             FATAL("failed to add a SIP023 user (users require 2022-blake3-aes-128/256-gcm)");
         }
     }
-    if (require_identity && (!relay_method.is_2022_aes() || relay_method.user_count() == 0)) {
-        FATAL("require_identity requires 2022-blake3-aes-128/256-gcm and at least one user");
+    if (require_identity && !relay_method.is_2022_aes()) {
+        FATAL("require_identity requires 2022-blake3-aes-128/256-gcm");
     }
     if (relay_method.is_2022() && !relay_method.reserve_salt_pool(65536, randombytes_random()))
         FATAL("failed to set up the AEAD-2022 salt pool");
