@@ -161,18 +161,6 @@ jobs:
           path: relocated-static/
           if-no-files-found: error
 
-  static-linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - name: Build and test fully static Clang/musl executables
-        run: docker build -f docker/static/Dockerfile --target artifacts --output type=local,dest=static-linux .
-      - uses: actions/upload-artifact@v4
-        with:
-          name: static-linux-${{ runner.arch }}
-          path: static-linux/
-          if-no-files-found: error
-
   freebsd:
     runs-on: ubuntu-latest
     steps:
@@ -193,24 +181,3 @@ jobs:
             cmake --build consumer
             ./consumer/consumer_static
             ./consumer/consumer_shared
-
-  offline-musl:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - name: Source archive
-        run: python3 scripts/source_archive.py release/shadowsocks-c.tar.gz
-      - name: Prepare compiler image
-        run: |
-          printf 'FROM alpine:3.24\nRUN apk add --no-cache build-base cmake python3 linux-headers\n' > /tmp/ss-toolchain.Dockerfile
-          docker build -t ss-toolchain -f /tmp/ss-toolchain.Dockerfile /tmp
-      - name: Build release archive with network disabled
-        run: |
-          docker run --rm --network none -v "$PWD/release:/release:ro" ss-toolchain sh -ec '
-            mkdir /src
-            tar xzf /release/shadowsocks-c.tar.gz -C /src --strip-components=1
-            cmake -S /src -B /build -DCMAKE_DISABLE_FIND_PACKAGE_Python3=TRUE
-            cmake --build /build --parallel 4
-            ctest --test-dir /build -L "unit|vendor" --output-on-failure --no-tests=error
-            python3 /src/tests/interop.py --self --bin /build/bin
-          '

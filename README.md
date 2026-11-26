@@ -80,13 +80,12 @@ refer to the [Wiki page](https://github.com/shadowsocks/shadowsocks/wiki/Feature
 
 ## Quick Start
 
-### Docker (recommended)
+### Prebuilt Linux binaries
 
-Docker is the recommended way to run a server. The image contains the bundled,
-fully static C binaries and supports Linux AMD64 and ARM64, including Linux
-containers under Docker Desktop on macOS and Windows.
-
-Create `config.json` and replace the example password with your own:
+Release archives contain fully static musl binaries for Linux AMD64. Download
+the `shadowsocks-c-<version>-linux-amd64.tar.gz` archive from
+[Releases](https://github.com/Nikolay-Jiang/shadowsocks-c/releases), extract it,
+and create `config.json` with a long random password:
 
 ```json
 {
@@ -98,35 +97,15 @@ Create `config.json` and replace the example password with your own:
 }
 ```
 
-In a POSIX shell, start the server with the configuration mounted read-only:
-
 ```sh
-docker pull ghcr.io/shadowsocks/shadowsocks-c:latest
-docker run -d --name shadowsocks-c --restart unless-stopped \
-  --user "$(id -u):$(id -g)" --read-only --cap-drop=ALL \
-  --security-opt=no-new-privileges:true \
-  -p 8388:8388/tcp -p 8388:8388/udp \
-  --mount type=bind,src="$PWD/config.json",dst=/etc/shadowsocks-c/config.json,readonly \
-  ghcr.io/shadowsocks/shadowsocks-c:latest
+tar -xzf shadowsocks-c-<version>-linux-amd64.tar.gz
+cd shadowsocks-c-<version>-linux-amd64
+./bin/ss-server -c /etc/shadowsocks-c/config.json
 ```
 
-Using your user ID lets the container read a configuration file owned by you.
-View logs with `docker logs shadowsocks-c`; stop it with `docker stop shadowsocks-c`.
-Configure your Shadowsocks client with the server address, port, password and
-method above.
-
-`latest` follows `master`; version tags and `sha-<full-commit>` tags identify
-specific published builds. If the registry image is not yet available, build it
-from this checkout with the same name, then run the command above without pulling:
-
-```sh
-docker build -f docker/static/Dockerfile --target runtime \
-  -t ghcr.io/shadowsocks/shadowsocks-c:latest .
-```
-
-See [Docker image details](docker/static/README.md) for publishing, updates,
-client mode and build options. Existing Snap packages still use the
-`shadowsocks-libev` name and may predate this modernization.
+The archive includes `README.md` and `sip023-users.md`. Configure your
+Shadowsocks client with the server address, port, password and method above.
+For other platforms, build from source below.
 
 ## Installation
 
@@ -150,7 +129,6 @@ client mode and build options. Existing Snap packages still use the
 - [OpenWRT](#openwrt)
 - [macOS](#macos)
 - [Windows (MinGW)](#windows-mingw)
-- [Docker](#docker)
 
 * * *
 
@@ -365,15 +343,7 @@ Cross-compilation does not run Windows tests. The portability workflow runs
 native UCRT64 tests and TCP/UDP relay checks on Windows. Bundled mode is required
 with a bundled libuv IOCP backend. MSVC remains a
 separate, unsupported milestone; configuration reports this explicitly.
-The historical Autotools scripts in `docker/mingw` are superseded by this build.
-
-### Docker
-
-Use the [recommended Docker installation](#docker-recommended) above.
-The image is `ghcr.io/shadowsocks/shadowsocks-c`; it accepts a JSON configuration
-file or the normal `ss-server` arguments. The historical `PASSWORD` environment
-variable wrapper belongs to the older Docker Hub image and is not used here.
-See [image and build details](docker/static/README.md).
+The historical Autotools scripts are superseded by this build.
 
 ## Usage
 

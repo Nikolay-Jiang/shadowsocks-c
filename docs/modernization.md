@@ -186,9 +186,7 @@ paths. Windows uses the native [MSYS2 CLANG64 environment](https://www.msys2.org
 
 macOS and Windows retain their OS libraries; static builds on these platforms
 mean no separately distributed project, crypto, event-loop or toolchain shared
-libraries. The `static-linux` job builds the Clang/musl Dockerfile, which also
-links libc statically and rejects ELF interpreters and `NEEDED` entries. All
-three jobs publish the tested installations as workflow artifacts.
+libraries. The two jobs publish the tested installations as workflow artifacts.
 
 ## Native event backends and asynchronous DNS
 

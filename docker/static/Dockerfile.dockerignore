@@ -1,9 +1,0 @@
-.git
-build*
-release
-libcork
-libipset
-libbloom
-**/__pycache__
-**/.DS_Store
-config.json

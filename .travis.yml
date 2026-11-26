@@ -29,10 +29,6 @@ before_install:
           make SHARED=1;
           sudo make install;
           popd;
-          # Load cached docker images
-          if [[ -d $HOME/docker ]]; then
-              ls $HOME/docker/*.tar.gz | xargs -I {file} sh -c "zcat {file} | docker load";
-          fi
       fi
 addons:
     apt:

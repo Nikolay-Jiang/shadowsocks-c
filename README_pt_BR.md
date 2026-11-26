@@ -63,7 +63,6 @@ sudo snap install shadowsocks-libev --edge
 - [OpenWRT](#openwrt)
 - [OS X](#os-x)
 - [Windows (MinGW)](#windows-mingw)
-- [Docker](#docker)
 
 * * *
 
@@ -318,35 +317,9 @@ brew install shadowsocks-libev
 ```
 
 ### Windows (MinGW)
-Para compilar binários nativos do Windows, o método recomendado é usar o Docker:
 
-* No Windows: clique duas vezes em `make.bat` em `docker\mingw`
-* No sistema do tipo Unix:
-
-        cd shadowsocks-libev/docker/mingw
-        make
-
-Um tarball com binários de 32 bits e 64 bits será gerado no mesmo diretório.
-
-Você também pode usar compiladores MinGW-w64 manualmente para compilar em shell do tipo Unix (MSYS2/Cygwin) ou compilar em sistemas semelhantes ao Unix (Linux/MacOS). Por favor, consulte os scripts de compilação em `docker/mingw`.
-
-Atualmente você precisa usar uma biblioteca libev corrigida para MinGW:
-
-* https://github.com/shadowsocks/libev/archive/mingw.zip
-
-Observe que o TCP Fast Open (TFO) está disponível apenas no **Windows 10**, **1607** ou versão posterior (precisamente, build >= 14393). Se você estiver usando **1709** (compilação 16299) ou versão posterior, também precisará executar o seguinte comando no PowerShell/Prompt de comando **como administrador** e **reinicializar** para usar o TFO corretamente:
-
-        netsh int tcp set global fastopenfallback=disabled
-
-### Docker
-
-Como você espera, basta puxar a imagem e executar.
-```
-docker pull shadowsocks/shadowsocks-libev
-docker run -e PASSWORD=<password> -p<server-port>:8388 -p<server-port>:8388/udp -d shadowsocks/shadowsocks-libev
-```
-
-Mais informações sobre a imagem podem ser encontradas [aqui](docker/alpine/README.md).
+O build atual usa CMake. Consulte o README em inglês para as instruções de
+compilação nativa e cruzada. Os scripts antigos de Docker/MinGW foram removidos.
 
 ## Utilização
 
