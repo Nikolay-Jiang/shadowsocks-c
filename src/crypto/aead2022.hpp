@@ -87,14 +87,21 @@ public:
 
     Status reserve(std::uint32_t capacity, std::uint64_t seed) noexcept;
     Status add(std::span<const std::uint8_t> hash, const Psk &key, std::uint8_t index) noexcept;
+    // Remove the identity from the lookup table but keep its key until any
+    // UDP session that still names the index has gone away.
+    bool erase_identity(std::span<const std::uint8_t> hash) noexcept;
+    bool release_slot(std::uint8_t index) noexcept;
     const Psk *find(std::span<const std::uint8_t> hash, std::uint8_t &index) const noexcept;
     const Psk *key(std::uint8_t index) const noexcept;
+    bool active(std::uint8_t index) const noexcept;
+    bool used(std::uint8_t index) const noexcept;
     std::uint32_t size() const noexcept { return index_.size(); }
 
 private:
     FixedHashMap<FixedKey<kIdentityLen>, std::uint8_t> index_;
     std::array<Psk, kMaxIdentityUsers> keys_{};
     std::array<bool, kMaxIdentityUsers> used_{};
+    std::array<bool, kMaxIdentityUsers> active_{};
 };
 
 // Exact-match TCP salt replay protection for servers (SIP022 forbids bloom

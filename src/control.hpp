@@ -2,9 +2,10 @@
 #ifndef SS_CONTROL_HPP
 #define SS_CONTROL_HPP
 
-// Read-only local control socket for ss-server: ssctl sends one datagram
-// ("users", "conns", "anon", "stats", optionally followed by "json") and
-// receives one text or JSON response. A Unix datagram socket keeps the
+// Local control socket for ss-server: ssctl sends one datagram ("users",
+// "conns", "anon", "stats", optionally followed by "json") and receives one
+// text or JSON response. A node agent may also send "reload" to apply
+// users-only changes from config.json. A Unix datagram socket keeps the
 // server side stateless: no per-client allocations or connection pool.
 
 #include <array>
@@ -22,6 +23,8 @@
 namespace ss::relay {
 
 struct ControlData {
+    using ReloadCallback = bool (*)(void *ctx, char *out, std::size_t capacity) noexcept;
+
     Method *method       = nullptr;
     UserRegistry *users  = nullptr;
     PeerLimiter *limiter = nullptr;
@@ -29,6 +32,8 @@ struct ControlData {
     UdpRelay *udp        = nullptr;
     std::uint64_t *tx    = nullptr;
     std::uint64_t *rx    = nullptr;
+    ReloadCallback reload = nullptr;
+    void *reload_ctx      = nullptr;
 };
 
 class ControlServer {

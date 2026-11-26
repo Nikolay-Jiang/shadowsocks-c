@@ -28,7 +28,8 @@ port, with per-user counters and per-IP limits for anonymous clients.
   },
 
   "control_socket": "/run/shadowsocks-c/control.sock",
-  "access_log": true
+  "access_log": true,
+  "require_identity": true
 }
 ```
 
@@ -65,6 +66,55 @@ The user ID is never sent in plaintext. The server maps
 name, so a client cannot claim another user's name without that user's PSK.
 Multiple terminals can use the same user PSK; their counters are aggregated
 under one user.
+
+## Rejecting anonymous clients
+
+By default, a client that sends only the server PSK is accepted as an
+anonymous user. Set `"require_identity": true` to turn `users` into an
+allowlist:
+
+```json
+{
+  "method": "2022-blake3-aes-256-gcm",
+  "password": "BASE64_SERVER_PSK",
+  "users": {
+    "alice": "BASE64_ALICE_PSK"
+  },
+  "require_identity": true
+}
+```
+
+With this option, a TCP connection or UDP datagram without a known SIP023
+identity is rejected. The server PSK is still part of the client password
+(`SERVER_PSK:USER_PSK`), but it cannot be used on its own.
+
+`require_identity` requires an AES-2022 method and at least one user. It is a
+startup option; changing it requires restarting the server.
+
+## Users-only reload
+
+The local control socket accepts a `reload` request. It rereads only the
+`users` object from `config.json` and applies the difference in place:
+
+```text
+reload
+```
+
+- New users are available immediately.
+- Removed users lose their identity and their active TCP/UDP sessions are
+  closed immediately.
+- A changed user PSK is treated as remove + add; the old identity and its
+  sessions are dropped, and the client must use the new password.
+- Unchanged users keep their counters and sessions.
+- The `users` field must be present; an absent field is rejected, while an
+  explicit `"users": {}` removes everyone.
+- Changes to `server`, `server_port`, `method`, the server PSK, or
+  `require_identity` are rejected with `restart_required`; restart the server
+  for those.
+
+The control socket remains mode `0600`. A node agent running as the same user
+as `ss-server` writes `config.json` atomically and sends `reload`. `ssctl`
+still exposes only the read-only query commands.
 
 ## Limits
 

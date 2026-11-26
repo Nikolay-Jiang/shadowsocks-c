@@ -303,7 +303,40 @@ Status IdentityTable::add(std::span<const std::uint8_t> hash, const Psk &key, st
     }
     keys_[index] = key;
     used_[index] = true;
+    active_[index] = true;
     return {};
+}
+
+bool IdentityTable::erase_identity(std::span<const std::uint8_t> hash) noexcept
+{
+    if (hash.size() != kIdentityLen) {
+        return false;
+    }
+    auto fixed = FixedKey<kIdentityLen>::from(as_bytes(hash.data(), hash.size()));
+    if (!fixed) {
+        return false;
+    }
+    std::uint8_t *found = index_.find(*fixed);
+    if (found == nullptr || *found >= kMaxIdentityUsers || !active_[*found]) {
+        return false;
+    }
+    const std::uint8_t slot = *found;
+    if (!index_.erase(*fixed)) {
+        return false;
+    }
+    active_[slot] = false;
+    return true;
+}
+
+bool IdentityTable::release_slot(std::uint8_t index) noexcept
+{
+    if (index >= kMaxIdentityUsers || !used_[index] || active_[index]) {
+        return false;
+    }
+    keys_[index]   = Psk{};
+    used_[index]   = false;
+    active_[index] = false;
+    return true;
 }
 
 const Psk *IdentityTable::find(std::span<const std::uint8_t> hash, std::uint8_t &index) const noexcept
@@ -316,7 +349,7 @@ const Psk *IdentityTable::find(std::span<const std::uint8_t> hash, std::uint8_t 
         return nullptr;
     }
     const std::uint8_t *found = index_.find(*fixed);
-    if (found == nullptr || *found >= kMaxIdentityUsers || !used_[*found]) {
+    if (found == nullptr || *found >= kMaxIdentityUsers || !active_[*found]) {
         return nullptr;
     }
     index = *found;
@@ -326,6 +359,16 @@ const Psk *IdentityTable::find(std::span<const std::uint8_t> hash, std::uint8_t 
 const Psk *IdentityTable::key(std::uint8_t index) const noexcept
 {
     return index < kMaxIdentityUsers && used_[index] ? &keys_[index] : nullptr;
+}
+
+bool IdentityTable::active(std::uint8_t index) const noexcept
+{
+    return index < kMaxIdentityUsers && active_[index];
+}
+
+bool IdentityTable::used(std::uint8_t index) const noexcept
+{
+    return index < kMaxIdentityUsers && used_[index];
 }
 
 bool SaltPool::check_and_add(std::span<const std::uint8_t> salt, std::uint64_t now) noexcept

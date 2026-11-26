@@ -381,6 +381,25 @@ public:
 
     bool erase(const K &key) noexcept { return take(key).has_value(); }
 
+    // Remove every entry for which `pred(key, value)` is true. The callback
+    // runs before the entry is destroyed and may not insert.
+    template <class F>
+    std::uint32_t erase_if(F &&pred) noexcept
+    {
+        std::uint32_t removed = 0;
+        std::uint32_t slot    = oldest_;
+        while (slot != kNone) {
+            const std::uint32_t next = node(slot)->next;
+            if (pred(static_cast<const K &>(node(slot)->key), *value(slot))) {
+                index_.erase(node(slot)->key);
+                (void)release(slot);
+                ++removed;
+            }
+            slot = next;
+        }
+        return removed;
+    }
+
     V *oldest() noexcept { return oldest_ == kNone ? nullptr : value(oldest_); }
     const K *oldest_key() const noexcept { return oldest_ == kNone ? nullptr : &node(oldest_)->key; }
 
