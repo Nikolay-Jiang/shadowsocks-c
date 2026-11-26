@@ -9,7 +9,6 @@ src/local.cpp 1
 src/manager.cpp 14
 src/plugin.cpp 3
 src/process.cpp 26
-src/redir.cpp 1
 src/rule.cpp 1
 src/server.cpp 3
 src/ssurl.cpp 3

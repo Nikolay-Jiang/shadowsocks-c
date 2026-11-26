@@ -26,7 +26,7 @@
 #define SOL_TCP IPPROTO_TCP
 #endif
 
-#if defined(MODULE_TUNNEL) || defined(MODULE_REDIR)
+#if defined(MODULE_TUNNEL)
 #define MODULE_LOCAL
 #endif
 

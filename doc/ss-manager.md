@@ -13,7 +13,7 @@ It is a port of the original shadowsocks created by clowwindy.
 *shadowsocks-c* is written in pure C and takes advantage of libuv to
 achieve both high performance and low resource consumption.
 
-*shadowsocks-c* consists of five components.
+*shadowsocks-c* consists of four components.
 ss-manager(1) is a controller for multi-user management and
 traffic statistics, using UNIX domain socket to talk with ss-server(1).
 Also, it provides a UNIX domain socket or IP based API for other software.
@@ -107,7 +107,6 @@ After that, you may communicate with ss-manager(1) as described above in the
 ss-local(1),
 ss-server(1),
 ss-tunnel(1),
-ss-redir(1),
 shadowsocks-libev(8),
 iptables(8),
 /etc/shadowsocks-libev/config.json

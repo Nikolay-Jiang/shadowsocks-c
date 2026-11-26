@@ -99,7 +99,6 @@ install -m 644 %{_builddir}/%{buildsubdir}/completions/zsh/* %{buildroot}%{_data
 %endif
 %endif
 setcap cap_net_bind_service+ep %{_bindir}/ss-local \
-       cap_net_bind_service,cap_net_admin+ep %{_bindir}/ss-redir \
        cap_net_bind_service+ep %{_bindir}/ss-server \
        cap_net_bind_service+ep %{_bindir}/ss-tunnel
 
@@ -121,11 +120,9 @@ if [ $1 -eq 0 ] ; then
     systemctl stop shadowsocks-libev-server@'*'.service  > /dev/null 2>&1 || :
     systemctl stop shadowsocks-libev-local@'*'.service  > /dev/null 2>&1 || :
     systemctl stop shadowsocks-libev-tunnel@'*'.service  > /dev/null 2>&1 || :
-    systemctl stop shadowsocks-libev-redir@'*'.service  > /dev/null 2>&1 || :
     systemctl --no-reload disable shadowsocks-libev-server@.service  > /dev/null 2>&1 || :
     systemctl --no-reload disable shadowsocks-libev-local@.service  > /dev/null 2>&1 || :
     systemctl --no-reload disable shadowsocks-libev-tunnel@.service  > /dev/null 2>&1 || :
-    systemctl --no-reload disable shadowsocks-libev-redir@.service  > /dev/null 2>&1 || :
 fi
 %endif
 %endif
@@ -140,19 +137,15 @@ fi
 %systemd_postun_with_restart shadowsocks-libev-server@'*'.service
 %systemd_postun_with_restart shadowsocks-libev-local@'*'.service
 %systemd_postun_with_restart shadowsocks-libev-tunnel@'*'.service
-%systemd_postun_with_restart shadowsocks-libev-redir@'*'.service
 %endif
 %endif
 
 %files
 %doc %{_docdir}/shadowsocks-libev/*.html
-%exclude %{_docdir}/shadowsocks-libev/ss-nat.html
 %{_bindir}/*
-%exclude %{_bindir}/ss-nat
 %config(noreplace) %{_sysconfdir}/shadowsocks-libev/config.json
 %{_datadir}/bash-completion/completions/*
 %doc %{_mandir}/man*/*
-%exclude %{_mandir}/man1/ss-nat.1.*
 %if ! 0%{?use_systemd}
 %{_initddir}/shadowsocks-libev
 %else

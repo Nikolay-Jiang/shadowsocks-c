@@ -19,7 +19,7 @@ class CliDocsTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         (self.root / 'src').mkdir()
         (self.root / 'doc').mkdir()
-        for name in ('local.cpp', 'server.cpp', 'tunnel.cpp', 'redir.cpp', 'manager.cpp', 'utils.cpp', 'ss-nat'):
+        for name in ('local.cpp', 'server.cpp', 'tunnel.cpp', 'manager.cpp', 'utils.cpp'):
             shutil.copyfile(ROOT / 'src' / name, self.root / 'src' / name)
         for path in (ROOT / 'doc').glob('*.md'):
             shutil.copyfile(path, self.root / 'doc' / path.name)
@@ -37,7 +37,6 @@ class CliDocsTests(unittest.TestCase):
         self.assertIn('-S', local)
         self.assertIn('-V', local)
         self.assertIn('--nftables-sets', DOCS.documented_options('server.cpp', sources))
-        self.assertIn('-I', DOCS.documented_options('ss-nat', sources))
         self.assertNotIn('-p', DOCS.documented_options('manager.cpp', sources))
 
     def test_new_option_requires_documentation(self):
@@ -60,11 +59,6 @@ class CliDocsTests(unittest.TestCase):
     def test_nonliteral_short_options_fail_closed(self):
         self.change('src/local.cpp', '":f:s:p:l:k:t:m:i:c:b:a:n:huUv6A"', 'SHORT_OPTIONS')
         with self.assertRaisesRegex(ValueError, 'literal getopt_long'):
-            DOCS.check(self.root)
-
-    def test_shell_options_require_documentation(self):
-        self.change('src/ss-nat', ':s:l:S:L:i:I:e:a:b:w:ouUfh', ':s:l:S:L:i:I:e:a:b:w:ouUfhz')
-        with self.assertRaisesRegex(ValueError, 'missing documentation.*-z'):
             DOCS.check(self.root)
 
     def test_missing_snippet_is_rejected(self):

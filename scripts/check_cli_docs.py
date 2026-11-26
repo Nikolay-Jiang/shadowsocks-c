@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 
 ROOT = Path(__file__).resolve().parents[1]
-PROGRAMS = ("local", "server", "tunnel", "redir", "manager", "nat")
+PROGRAMS = ("local", "server", "tunnel", "manager")
 C_COMMENT = re.compile(r'/\*.*?\*/|//[^\n]*', re.S)
 
 
@@ -109,11 +109,10 @@ def module_source(sources, module):
 def check(root=ROOT, rendered=None):
     sources = {path.name: path.read_text(encoding='utf-8')
                for pattern in ('*.c', '*.cpp') for path in (root / 'src').glob(pattern)}
-    sources['ss-nat'] = (root / 'src/ss-nat').read_text(encoding='utf-8')
     for module in PROGRAMS:
         program = 'ss-' + module
-        filename = 'ss-nat' if module == 'nat' else module_source(sources, module)
-        declared = options(sources[filename], shell=module == 'nat')
+        filename = module_source(sources, module)
+        declared = options(sources[filename])
         documented = documented_options(filename, sources)
         missing = declared.keys() - documented.keys()
         extra = documented.keys() - declared.keys()

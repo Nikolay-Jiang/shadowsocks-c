@@ -1024,7 +1024,7 @@ Same behavior as `-V`; see that option for details. Short alias: `-V`.
         if (get_sockaddr(host, port, &udp_config.remote, 1, ipv6first) == -1) {
             FATAL("failed to resolve the provided hostname");
         }
-        auto udp_fd = ss::relay::open_udp_listener(local_addr, local_port, false, reuse_port != 0);
+        auto udp_fd = ss::relay::open_udp_listener(local_addr, local_port, reuse_port != 0);
         if (!udp_fd || !udp_relay.init(tcp_loop, relay_method, udp_config, NULL) || !udp_relay.listen(*udp_fd)) {
             FATAL("failed to initialize UDP relay");
         }

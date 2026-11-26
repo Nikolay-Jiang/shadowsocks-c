@@ -19,7 +19,7 @@ class CliTests(unittest.TestCase):
     def setUpClass(cls):
         suffix = '.exe' if os.name == 'nt' else ''
         cls.binaries = {name: BIN_DIR / ('ss-' + name + suffix)
-                        for name in ('local', 'server', 'tunnel', 'redir', 'manager')
+                        for name in ('local', 'server', 'tunnel', 'manager')
                         if (BIN_DIR / ('ss-' + name + suffix)).is_file()}
         for name in ('local', 'server', 'tunnel'):
             if name not in cls.binaries:
@@ -108,14 +108,11 @@ class CliTests(unittest.TestCase):
                 args += ['--listen-port', '1080']
             if name == 'server':
                 args += ['--outbound-address', '127.0.0.1']
-            if name != 'redir':
-                args += ['--interface', 'lo']
+            args += ['--interface', 'lo']
             if name in ('server', 'manager'):
                 args += ['--nameserver', '127.0.0.1']
             if name == 'tunnel':
                 args += ['--destination', '127.0.0.1:80']
-            if name == 'redir':
-                args += ['--tproxy']
             result = self.run_cli(name, *args, '--help')
             self.assertEqual(result.returncode, 0, (name, result.stderr))
             self.assertIn('Usage:', result.stdout)
@@ -175,7 +172,7 @@ class CliTests(unittest.TestCase):
                     self.assertEqual('resolving hostname to IPv6 address first' in output, ipv6, output)
 
     def test_server_endpoint_arguments(self):
-        for name in ('local', 'tunnel', 'redir'):
+        for name in ('local', 'tunnel'):
             if name not in self.binaries:
                 continue
             for endpoint in ('example.com:8388', '127.0.0.1:8388', '[::1]:8388',

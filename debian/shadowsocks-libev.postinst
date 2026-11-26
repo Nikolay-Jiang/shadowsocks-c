@@ -23,7 +23,6 @@ case "$1" in
 		if pathfind setcap; then
 			if ! setcap \
 				cap_net_bind_service+ep /usr/bin/ss-local \
-				cap_net_bind_service,cap_net_admin+ep /usr/bin/ss-redir \
 				cap_net_bind_service+ep /usr/bin/ss-server \
 				cap_net_bind_service+ep /usr/bin/ss-tunnel; then
 				echo "Failed to set capabilities; ss-* will only be runnable by root."

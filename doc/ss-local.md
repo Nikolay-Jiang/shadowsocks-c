@@ -13,7 +13,7 @@ It is a port of the original shadowsocks created by clowwindy.
 *shadowsocks-c* is written in pure C and takes advantage of libuv to
 achieve both high performance and low resource consumption.
 
-*shadowsocks-c* consists of five components. ss-local(1) works as a standard
+*shadowsocks-c* consists of four components. ss-local(1) works as a standard
 socks5 proxy on local machines to proxy TCP traffic.
 For more information, check out shadowsocks-libev(8).
 
@@ -36,7 +36,6 @@ ss-local --server example.com:12345 --listen-port 1080 --password foobar --ciphe
 
 ss-server(1),
 ss-tunnel(1),
-ss-redir(1),
 ss-manager(1),
 shadowsocks-libev(8),
 iptables(8),

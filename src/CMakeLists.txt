@@ -1,9 +1,6 @@
-# redir need linux/* stuff
 if (LINUX)
-    option(WITH_SS_REDIR "Build ss-redir" ON)
     option(WITH_SS_MANAGER "Build ss-manager" ON)
 else ()
-    option(WITH_SS_REDIR "Build ss-redir" OFF)
     option(WITH_SS_MANAGER "Build ss-manager" OFF)
 endif ()
 
@@ -106,15 +103,6 @@ set(SS_MANAGER_SOURCE
         manager.cpp
         )
 
-set(SS_REDIR_SOURCE
-        ${SS_SHARED_SOURCES}
-        redir.cpp
-        ${SS_RELAY_SOURCE}
-        ${SS_CRYPTO_SOURCE}
-        ${SS_PLUGIN_SOURCE}
-        )
-
-
 set(SS_CORE_DEPS ss_ev ss_cares ss_sodium ss_mbedcrypto blake3 bloom Threads::Threads ${SS_MATH_LIBRARY})
 set(SS_ACL_DEPS)
 if(SS_ENABLE_REGEX)
@@ -144,12 +132,6 @@ if(SS_BUILD_EXECUTABLES)
     ss_program(ss-tunnel MODULE_TUNNEL "${SS_TUNNEL_SOURCE}")
     if(WITH_SS_MANAGER)
         ss_program(ss-manager MODULE_MANAGER "${SS_MANAGER_SOURCE}")
-    endif()
-    if(WITH_SS_REDIR)
-        if(NOT LINUX)
-            message(FATAL_ERROR "ss-redir requires Linux")
-        endif()
-        ss_program(ss-redir MODULE_REDIR "${SS_REDIR_SOURCE}")
     endif()
     if(NOT MINGW)
         add_executable(ssctl ssctl.cpp)

@@ -112,7 +112,7 @@ if(Python3_Interpreter_FOUND)
     # runtime library (see docs/cpp-core.md). Sanitizer runtimes bring their
     # own C++ symbols, so skip the check there.
     set(SS_RUNTIME_CHECKED)
-    foreach(target ss-local ss-server ss-tunnel ss-redir ss-manager shadowsocks-c-static)
+    foreach(target ss-local ss-server ss-tunnel ss-manager shadowsocks-c-static)
         if(TARGET ${target})
             get_target_property(excluded ${target} EXCLUDE_FROM_ALL)
             if(NOT excluded)

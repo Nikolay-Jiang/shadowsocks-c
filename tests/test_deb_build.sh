@@ -124,12 +124,12 @@ if [ "$FAIL_COUNT" -gt 0 ]; then
 fi
 
 # Main package: binaries
-for bin in ss-local ss-server ss-redir ss-tunnel ss-manager; do
+for bin in ss-local ss-server ss-tunnel ss-manager; do
     check_file_in_deb "$DEB_MAIN" "usr/bin/${bin}" "$bin binary in main package"
 done
 
 # Main package: man pages
-for bin in ss-local ss-server ss-redir ss-tunnel ss-manager; do
+for bin in ss-local ss-server ss-tunnel ss-manager; do
     check_file_in_deb "$DEB_MAIN" "usr/share/man/man1/$bin\\.1" "$bin man page in main package"
 done
 
@@ -166,7 +166,7 @@ done
 log "Phase 4: Smoke-test installed binaries"
 
 # Each binary should respond to --help
-for bin in ss-local ss-server ss-redir ss-tunnel ss-manager; do
+for bin in ss-local ss-server ss-tunnel ss-manager; do
     check_command "$bin --help" "$bin --help runs"
 done
 

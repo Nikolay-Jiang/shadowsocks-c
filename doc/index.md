@@ -6,13 +6,11 @@ source documentation.
 - \ref ss-local "ss-local: SOCKS5 client"
 - \ref ss-server "ss-server: proxy server"
 - \ref ss-tunnel "ss-tunnel: local port forwarding"
-- \ref ss-redir "ss-redir: transparent proxy"
 - \ref ss-manager "ss-manager: multi-user management"
-- \ref ss-nat "ss-nat: NAT setup helper"
 - \ref shadowsocks-c "Configuration, examples, and management protocol"
 
 [Download the generated man pages](https://shadowsocks.github.io/shadowsocks-c/man-pages.tar.gz)
-from the published site. The archive includes the six CLI manuals and both
+from the published site. The archive includes the four CLI manuals and both
 overview lookup names.
 
 \section cli_conventions CLI conventions

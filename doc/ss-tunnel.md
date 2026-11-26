@@ -13,7 +13,7 @@ It is a port of the original shadowsocks created by clowwindy.
 *shadowsocks-c* is written in pure C and takes advantage of libuv to
 achieve both high performance and low resource consumption.
 
-*shadowsocks-c* consists of five components.
+*shadowsocks-c* consists of four components.
 ss-tunnel(1) is a tool for local port forwarding.
 See `OPTIONS` section for special option needed by ss-tunnel(1).
 For more information, check out shadowsocks-libev(8).
@@ -41,7 +41,6 @@ dig @127.0.0.1 -p 5353 www.google.com
 
 ss-local(1),
 ss-server(1),
-ss-redir(1),
 ss-manager(1),
 shadowsocks-libev(8),
 iptables(8),

@@ -118,7 +118,6 @@ typedef struct {
     int anon_burst_kb;
     int anon_ipv6_prefix;
     int anon_max_tracked_ips;
-    int tcp_tproxy;
     char *workdir;
     char *acl;
     char *manager_address;

@@ -79,9 +79,7 @@ Doxygen 1.9.4 or newer renders HTML and man pages directly from native source
 snippets. Each CLI parser has a `cli-options` snippet containing Doxygen
 `\snippet{doc}` references to its option descriptions. Shared descriptions live
 in `src/utils.cpp`; command-specific descriptions live beside the parser. The
-`ss-nat` script keeps its snippets in a quoted no-op heredoc so documentation
-cannot execute shell substitutions. Cipher tables are included directly with
-Doxygen code snippets.
+Cipher tables are included directly with Doxygen code snippets.
 
 When adding or changing an option, update its parser, source snippet, and the
 parser's `cli-options` list. Keep argument names and platform restrictions in the

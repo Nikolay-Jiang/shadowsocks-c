@@ -10,11 +10,7 @@
 
 *ss-tunnel* [options]
 
-*ss-redir* [options]
-
 *ss-manager* [options]
-
-*ss-nat* [options]
 
 \section overview_description DESCRIPTION
 
@@ -23,15 +19,11 @@ It is a port of the original shadowsocks created by clowwindy.
 *shadowsocks-c* is written in pure C and takes advantage of *libuv*
 to achieve both high performance and low resource consumption.
 
-*shadowsocks-c* consists of five components. One is ss-server(1)
+*shadowsocks-c* consists of four components. One is ss-server(1)
 that runs on a remote server to provide secured tunnel service.
-ss-local(1) and ss-redir(1) are clients on your local machines to proxy
-traffic(TCP/UDP or both).
+ss-local(1) is a client on your local machine to proxy traffic (TCP/UDP or
+both).
 ss-tunnel(1) is a tool for local port forwarding.
-
-While ss-local(1) works as a standard socks5 proxy, ss-redir(1) works
-as a transparent proxy and requires netfilter's NAT module. For more
-information, check out the `EXAMPLE` section.
 
 ss-manager(1) is a controller for multi-user management and traffic
 statistics, using UNIX domain socket to talk with ss-server(1).
@@ -49,13 +41,7 @@ See this command's generated SYNOPSIS and OPTIONS for its accepted arguments.
 **ss-tunnel(1)**
 See this command's generated SYNOPSIS and OPTIONS for its accepted arguments.
 
-**ss-redir(1)**
-See this command's generated SYNOPSIS and OPTIONS for its accepted arguments.
-
 **ss-manager(1)**
-See this command's generated SYNOPSIS and OPTIONS for its accepted arguments.
-
-**ss-nat(1)**
 See this command's generated SYNOPSIS and OPTIONS for its accepted arguments.
 
 \section overview_config_file CONFIG FILE
@@ -92,50 +78,8 @@ The config file equivalent of command line options is listed as examples below.
 - `-u`: `"mode": "tcp_and_udp"`
 - `-U`: `"mode": "udp_only"`
 - `no "-u" nor "-U" options (default)`: `"mode": "tcp_only"`
-- `-T`: `"tcp_tproxy": true`
 - `(only in ss-manager's config)`: `"port_password": {"1234":"PasSworD"}`
  |
-\section overview_example EXAMPLE
-
-`ss-redir` requires netfilter's NAT function. Here is an example:
-
-```
-# Create new chain
-iptables -t nat -N SHADOWSOCKS
-iptables -t mangle -N SHADOWSOCKS
-
-# Ignore your shadowsocks server's addresses
-# It's very IMPORTANT, just be careful.
-iptables -t nat -A SHADOWSOCKS -d 123.123.123.123 -j RETURN
-
-# Ignore LANs and any other addresses you'd like to bypass the proxy
-# See Wikipedia and RFC5735 for full list of reserved networks.
-# See ashi009/bestroutetb for a highly optimized CHN route list.
-iptables -t nat -A SHADOWSOCKS -d 0.0.0.0/8 -j RETURN
-iptables -t nat -A SHADOWSOCKS -d 10.0.0.0/8 -j RETURN
-iptables -t nat -A SHADOWSOCKS -d 127.0.0.0/8 -j RETURN
-iptables -t nat -A SHADOWSOCKS -d 169.254.0.0/16 -j RETURN
-iptables -t nat -A SHADOWSOCKS -d 172.16.0.0/12 -j RETURN
-iptables -t nat -A SHADOWSOCKS -d 192.168.0.0/16 -j RETURN
-iptables -t nat -A SHADOWSOCKS -d 224.0.0.0/4 -j RETURN
-iptables -t nat -A SHADOWSOCKS -d 240.0.0.0/4 -j RETURN
-
-# Anything else should be redirected to shadowsocks's local port
-iptables -t nat -A SHADOWSOCKS -p tcp -j REDIRECT --to-ports 12345
-
-# Add any UDP rules
-ip rule add fwmark 0x01/0x01 table 100
-ip route add local 0.0.0.0/0 dev lo table 100
-iptables -t mangle -A SHADOWSOCKS -p udp --dport 53 -j TPROXY --on-port 12345 --tproxy-mark 0x01/0x01
-
-# Apply the rules
-iptables -t nat -A PREROUTING -p tcp -j SHADOWSOCKS
-iptables -t mangle -A PREROUTING -j SHADOWSOCKS
-
-# Start the shadowsocks-redir
-ss-redir -u -c /etc/config/shadowsocks.json -f /var/run/shadowsocks.pid
-```
-
 \section overview_protocol PROTOCOL
 
 **ss-manager(1) provides several APIs through UDP protocol**
@@ -175,7 +119,6 @@ stat: {"8001":11370}
 ss-local(1),
 ss-server(1),
 ss-tunnel(1),
-ss-redir(1),
 ss-manager(1),
 iptables(8),
 /etc/shadowsocks-libev/config.json

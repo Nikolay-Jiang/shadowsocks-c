@@ -643,8 +643,6 @@ cli_program(void)
     return "ss-server";
 #elif defined(MODULE_TUNNEL)
     return "ss-tunnel";
-#elif defined(MODULE_REDIR)
-    return "ss-redir";
 #elif defined(MODULE_MANAGER)
     return "ss-manager";
 #else
@@ -722,14 +720,9 @@ usage(void)
     cli_help_option("--ipv4-first", "Prefer IPv4 DNS results; overrides configuration.");
     cli_help_option("-6, --ipv6-first", "Prefer IPv6 DNS results.");
     cli_help_option("-t, --timeout SECONDS", "Socket timeout (default: 60).");
-#ifndef MODULE_REDIR
     cli_help_option("-i, --interface NAME", "Outbound network interface, where supported.");
-#endif
 #if defined(MODULE_REMOTE) || defined(MODULE_MANAGER)
     cli_help_option("-d, --nameserver ADDRESS", "Name servers for the internal DNS resolver.");
-#endif
-#ifdef MODULE_REDIR
-    cli_help_option("-T, --tproxy", "Use TPROXY for TCP; UDP always requires TPROXY.");
 #endif
     cli_help_option("--mtu BYTES", "Network MTU (0 selects the default).");
     cli_help_option("--fast-open", "Enable TCP Fast Open where supported.");
@@ -739,7 +732,7 @@ usage(void)
     cli_help_option("--max-connections NUMBER", "TCP connections served at once (default: 1024).");
     cli_help_option("--max-udp-sessions NUMBER", "UDP associations kept (default: 256; ss-server 512).");
 #endif
-#if defined(MODULE_REMOTE) || (defined(MODULE_LOCAL) && !defined(MODULE_TUNNEL) && !defined(MODULE_REDIR))
+#if defined(MODULE_REMOTE) || (defined(MODULE_LOCAL) && !defined(MODULE_TUNNEL))
     cli_help_option("--max-dns-queries NUMBER", "DNS lookups in flight (default: the connection limit).");
 #endif
 #ifdef MODULE_LOCAL

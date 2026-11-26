@@ -9,22 +9,11 @@
 
 #include <sodium.h>
 
-#ifdef __linux__
-#include <linux/netfilter_ipv4.h>
-#endif
-
 #include "acl.h" // BLACK_LIST, WHITE_LIST
 #include "jconf.h"
 #include "utils.h"
 
 extern "C" int verbose;
-
-#ifndef SOL_IPV6
-#define SOL_IPV6 IPPROTO_IPV6
-#endif
-#ifndef IP6T_SO_ORIGINAL_DST
-#define IP6T_SO_ORIGINAL_DST 80
-#endif
 
 namespace ss::relay {
 
@@ -69,26 +58,6 @@ void send_reply(ss_socket_t fd, const std::uint8_t *data, std::size_t len) noexc
     // Handshake replies are tiny; like the C relays, a short send is fatal.
     (void)send_some(fd, { data, len });
 }
-
-#ifdef __linux__
-bool original_destination(ss_socket_t fd, bool tproxy, sockaddr_storage &out) noexcept
-{
-    socklen_t len = sizeof(out);
-    if (tproxy) {
-        return getsockname(fd, reinterpret_cast<sockaddr *>(&out), &len) == 0;
-    }
-    if (getsockopt(fd, SOL_IPV6, IP6T_SO_ORIGINAL_DST, &out, &len) == 0) {
-        return true;
-    }
-    len = sizeof(out);
-    return getsockopt(fd, SOL_IP, SO_ORIGINAL_DST, &out, &len) == 0;
-}
-#else
-bool original_destination(ss_socket_t, bool, sockaddr_storage &) noexcept
-{
-    return false;
-}
-#endif
 
 void peer_endpoint(const sockaddr_storage &addr, char *out, std::size_t size) noexcept
 {
@@ -563,18 +532,6 @@ Flow Connection::start(ss_socket_t fd) noexcept
         stage_ = Stage::socks_method;
         update_interest();
         return Flow::proceed;
-    case Kind::redir: {
-        sockaddr_storage dest{};
-        if (!original_destination(fd, cfg.tproxy, dest)) {
-            ERROR("getdestaddr");
-            return close();
-        }
-        target_header_len_ = encode_socks_addr(reinterpret_cast<sockaddr *>(&dest), target_header_.data());
-        if (target_header_len_ == 0) {
-            return close();
-        }
-        break;
-    }
     case Kind::tunnel:
         std::memcpy(target_header_.data(), cfg.tunnel_target.data(), cfg.tunnel_target_len);
         target_header_len_ = cfg.tunnel_target_len;
@@ -591,7 +548,7 @@ Flow Connection::start(ss_socket_t fd) noexcept
         return Flow::proceed;
     }
     }
-    // ss-tunnel and ss-redir: the target is known; with fast open, wait a
+    // ss-tunnel: the target is known; with fast open, wait a
     // moment so the first payload can ride in the SYN.
     upstream_addr_ = relay_->pick_remote();
     if (cfg.fast_open) {

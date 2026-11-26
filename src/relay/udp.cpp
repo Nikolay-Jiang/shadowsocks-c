@@ -19,43 +19,11 @@
 
 extern "C" int verbose;
 
-#ifndef SOL_IP
-#define SOL_IP IPPROTO_IP
-#endif
-#ifndef SOL_IPV6
-#define SOL_IPV6 IPPROTO_IPV6
-#endif
-#ifdef __linux__
-#ifndef IP_TRANSPARENT
-#define IP_TRANSPARENT 19
-#endif
-#ifndef IPV6_TRANSPARENT
-#define IPV6_TRANSPARENT 75
-#endif
-#ifndef IP_RECVORIGDSTADDR
-#define IP_RECVORIGDSTADDR 20
-#endif
-#ifndef IPV6_RECVORIGDSTADDR
-#define IPV6_RECVORIGDSTADDR 74
-#endif
-#endif
-
 namespace ss::relay {
 
 using event::Flow;
 
 namespace {
-
-#ifdef __linux__
-// musl's CMSG_NXTHDR compares a size_t with a ptrdiff_t.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wsign-compare"
-cmsghdr *next_cmsg(msghdr *msg, cmsghdr *c) noexcept
-{
-    return CMSG_NXTHDR(msg, c);
-}
-#pragma GCC diagnostic pop
-#endif
 
 void peer_endpoint(const sockaddr_storage &addr, char *out, std::size_t size) noexcept
 {
@@ -120,67 +88,9 @@ void *unpack_ptr(std::uint64_t v) noexcept
     return reinterpret_cast<void *>(static_cast<std::uintptr_t>(v));
 }
 
-// ss-redir replies come from the original destination: a transparent
-// socket bound to it, one per datagram as in the C relay.
-void send_as(const sockaddr_storage &from, const sockaddr_storage &to, std::span<const std::uint8_t> data,
-             bool reuse_port) noexcept
-{
-#ifdef __linux__
-    sockaddr_storage src = from, dst = to;
-    auto map = [](sockaddr_storage &a) {
-        if (a.ss_family != AF_INET) {
-            return;
-        }
-        sockaddr_in v4;
-        std::memcpy(&v4, &a, sizeof(v4));
-        sockaddr_in6 v6{};
-        v6.sin6_family            = AF_INET6;
-        v6.sin6_port              = v4.sin_port;
-        v6.sin6_addr.s6_addr[10]  = 0xff;
-        v6.sin6_addr.s6_addr[11]  = 0xff;
-        std::memcpy(&v6.sin6_addr.s6_addr[12], &v4.sin_addr, 4);
-        a = {};
-        std::memcpy(&a, &v6, sizeof(v6));
-    };
-    map(src);
-    map(dst);
-    ss_socket_t fd = ss_socket(AF_INET6, SOCK_DGRAM, 0);
-    if (!valid_socket(fd)) {
-        ERROR("[udp] remote_recv_socket");
-        return;
-    }
-    int opt = 1;
-    if (ss_setsockopt(fd, SOL_IPV6, IPV6_TRANSPARENT, &opt, sizeof(opt))
-        || ss_setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
-        ERROR("[udp] remote_recv_setsockopt");
-        ss_socket_close(fd);
-        return;
-    }
-    if (reuse_port && set_reuseport(fd) != 0) {
-        ERROR("[udp] remote_recv port_reuse");
-    }
-    set_qos(fd);
-    if (bind(fd, reinterpret_cast<sockaddr *>(&src), sizeof(sockaddr_in6)) != 0) {
-        ERROR("[udp] remote_recv_bind");
-        ss_socket_close(fd);
-        return;
-    }
-    if (sendto(fd, data.data(), data.size(), 0, reinterpret_cast<sockaddr *>(&dst), sizeof(sockaddr_in6)) == -1
-        && ss_socket_error() != EAGAIN && ss_socket_error() != EWOULDBLOCK) {
-        ERROR("[udp] remote_recv_sendto");
-    }
-    ss_socket_close(fd);
-#else
-    (void)from;
-    (void)to;
-    (void)data;
-    (void)reuse_port;
-#endif
-}
-
 } // namespace
 
-Result<ss_socket_t> open_udp_listener(const char *host, const char *port, bool transparent, bool reuse_port) noexcept
+Result<ss_socket_t> open_udp_listener(const char *host, const char *port, bool reuse_port) noexcept
 {
     addrinfo hints{};
     hints.ai_family   = AF_UNSPEC;
@@ -221,22 +131,6 @@ Result<ss_socket_t> open_udp_listener(const char *host, const char *port, bool t
             LOGI("udp port reuse enabled");
         }
         set_qos(fd);
-#ifdef __linux__
-        if (transparent) {
-            int sol    = rp->ai_family == AF_INET ? SOL_IP : SOL_IPV6;
-            int flag_t = rp->ai_family == AF_INET ? IP_TRANSPARENT : IPV6_TRANSPARENT;
-            int flag_r = rp->ai_family == AF_INET ? IP_RECVORIGDSTADDR : IPV6_RECVORIGDSTADDR;
-            if (ss_setsockopt(fd, sol, flag_t, &opt, sizeof(opt))) {
-                ERROR("[udp] setsockopt IP_TRANSPARENT");
-                exit(EXIT_FAILURE);
-            }
-            if (ss_setsockopt(fd, sol, flag_r, &opt, sizeof(opt))) {
-                FATAL("[udp] setsockopt IP_RECVORIGDSTADDR");
-            }
-        }
-#else
-        (void)transparent;
-#endif
         if (bind(fd, rp->ai_addr, rp->ai_addrlen) == 0) {
             break;
         }
@@ -367,41 +261,9 @@ void UdpRelay::receive(Listener &listener) noexcept
 {
     for (int i = 0; i < kReceiveBurst && !shutting_down_; ++i) {
         sockaddr_storage from{};
-        sockaddr_storage original{};
-        bool have_original = false;
-        ssize_t r          = -1;
-#ifdef __linux__
-        if (config_.kind == Kind::redir) {
-            char control[64] = {};
-            iovec iov{ in_.data(), in_.size() };
-            msghdr msg{};
-            msg.msg_name       = &from;
-            msg.msg_namelen    = sizeof(from);
-            msg.msg_control    = control;
-            msg.msg_controllen = sizeof(control);
-            msg.msg_iov        = &iov;
-            msg.msg_iovlen     = 1;
-            r                  = recvmsg(listener.poll.fd(), &msg, 0);
-            if (r >= 0) {
-                for (cmsghdr *c = CMSG_FIRSTHDR(&msg); c != nullptr; c = next_cmsg(&msg, c)) {
-                    if (c->cmsg_level == SOL_IP && c->cmsg_type == IP_RECVORIGDSTADDR) {
-                        std::memcpy(&original, CMSG_DATA(c), sizeof(sockaddr_in));
-                        original.ss_family = AF_INET;
-                        have_original      = true;
-                    } else if (c->cmsg_level == SOL_IPV6 && c->cmsg_type == IPV6_RECVORIGDSTADDR) {
-                        std::memcpy(&original, CMSG_DATA(c), sizeof(sockaddr_in6));
-                        original.ss_family = AF_INET6;
-                        have_original      = true;
-                    }
-                }
-            }
-        } else
-#endif
-        {
-            socklen_t len = sizeof(from);
-            r = recvfrom(listener.poll.fd(), reinterpret_cast<char *>(in_.data()), in_.size(), 0,
-                         reinterpret_cast<sockaddr *>(&from), &len);
-        }
+        socklen_t len = sizeof(from);
+        ssize_t r     = recvfrom(listener.poll.fd(), reinterpret_cast<char *>(in_.data()), in_.size(), 0,
+                                 reinterpret_cast<sockaddr *>(&from), &len);
         if (r < 0) {
             int err = ss_socket_error();
             if (err != EAGAIN && err != EWOULDBLOCK && err != EINTR) {
@@ -415,14 +277,8 @@ void UdpRelay::receive(Listener &listener) noexcept
         std::span<std::uint8_t> packet(in_.data(), static_cast<std::size_t>(r));
         if (config_.kind == Kind::server) {
             server_packet(listener, from, packet);
-        } else if (config_.kind == Kind::redir) {
-            if (!have_original) {
-                LOGE("[udp] unable to get dest addr");
-                continue;
-            }
-            client_packet(listener, from, packet, &original);
         } else {
-            client_packet(listener, from, packet, nullptr);
+            client_packet(listener, from, packet);
         }
     }
 }
@@ -536,8 +392,7 @@ std::uint32_t UdpRelay::drop_user(std::uint8_t index) noexcept
     });
 }
 
-void UdpRelay::client_packet(Listener &listener, const sockaddr_storage &from, std::span<std::uint8_t> packet,
-                             const sockaddr_storage *original_dst) noexcept
+void UdpRelay::client_packet(Listener &listener, const sockaddr_storage &from, std::span<std::uint8_t> packet) noexcept
 {
     // Build [target address][payload] in out_.
     std::size_t n = 0;
@@ -563,19 +418,9 @@ void UdpRelay::client_packet(Listener &listener, const sockaddr_storage &from, s
         n = packet.size() - 3;
         std::memcpy(out_.data(), packet.data() + 3, n);
     } else {
-        std::size_t header = 0;
-        if (config_.kind == Kind::tunnel) {
-            std::memcpy(out_.data(), config_.tunnel_target.data(), config_.tunnel_target_len);
-            header = config_.tunnel_target_len;
-        } else {
-            header = encode_socks_addr(reinterpret_cast<const sockaddr *>(original_dst), out_.data());
-            if (header == 0) {
-                LOGE("[udp] failed to parse tproxy addr");
-                return;
-            }
-        }
-        std::memcpy(out_.data() + header, packet.data(), packet.size());
-        n = header + packet.size();
+        std::memcpy(out_.data(), config_.tunnel_target.data(), config_.tunnel_target_len);
+        std::memcpy(out_.data() + config_.tunnel_target_len, packet.data(), packet.size());
+        n = config_.tunnel_target_len + packet.size();
     }
     UdpSession *session = session_for(listener.index, from, config_.remote.ss_family);
     if (session == nullptr) {
@@ -867,7 +712,6 @@ void UdpRelay::reply(UdpSession &session) noexcept
         std::span<std::uint8_t> packet(in_.data(), static_cast<std::size_t>(r));
         const Listener &listener = listeners_[session.listener_];
         std::span<const std::uint8_t> datagram;
-        sockaddr_storage reply_from{};
 
         if (config_.kind == Kind::server) {
             if (config_.rx != nullptr) {
@@ -938,23 +782,14 @@ void UdpRelay::reply(UdpSession &session) noexcept
                 datagram                    = { out_.data(), *opened + 3 };
             } else {
                 datagram = { out_.data() + target.length, *opened - target.length };
-                if (config_.kind == Kind::redir) {
-                    if (target.type == 3) {
-                        LOGI("[udp] ss-redir does not support domain name");
-                        continue;
-                    }
-                    reply_from = target.ip;
-                }
             }
         }
 
-        if (config_.kind == Kind::redir) {
-            send_as(reply_from, session.client_, datagram, config_.reuse_port);
-        } else if (sendto(listener.poll.fd(), reinterpret_cast<const char *>(datagram.data()), datagram.size(), 0,
-                          reinterpret_cast<const sockaddr *>(&session.client_),
-                          sockaddr_size(reinterpret_cast<const sockaddr *>(&session.client_)))
-                       == -1
-                   && ss_socket_error() != EAGAIN && ss_socket_error() != EWOULDBLOCK) {
+        if (sendto(listener.poll.fd(), reinterpret_cast<const char *>(datagram.data()), datagram.size(), 0,
+                   reinterpret_cast<const sockaddr *>(&session.client_),
+                   sockaddr_size(reinterpret_cast<const sockaddr *>(&session.client_)))
+                == -1
+            && ss_socket_error() != EAGAIN && ss_socket_error() != EWOULDBLOCK) {
             ERROR("[udp] remote_recv_sendto");
             continue;
         }

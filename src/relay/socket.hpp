@@ -30,7 +30,6 @@ struct SocketTuning {
     int mptcp            = 0;
     const char *iface    = nullptr;
     bool keepalive       = false;
-    bool keepalive_tuned = false; // ss-redir: idle 40 s, interval 20 s, 5 probes
     int tos              = -1;
     // ss-server --bind-address: source addresses for each family.
     const sockaddr_storage *bind_v4 = nullptr;

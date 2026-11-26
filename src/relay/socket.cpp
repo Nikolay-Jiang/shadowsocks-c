@@ -90,17 +90,9 @@ Result<ss_socket_t> open_upstream(int family, SocketTuning &t, bool protect) noe
     int opt = 1;
     set_nodelay(fd, true);
     set_nosigpipe(fd);
-    if (t.keepalive || t.keepalive_tuned) {
+    if (t.keepalive) {
         (void)ss_setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt));
     }
-#if defined(TCP_KEEPIDLE) && defined(TCP_KEEPINTVL) && defined(TCP_KEEPCNT)
-    if (t.keepalive_tuned) {
-        int idle = 40, interval = 20, count = 5;
-        (void)ss_setsockopt(fd, SOL_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
-        (void)ss_setsockopt(fd, SOL_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
-        (void)ss_setsockopt(fd, SOL_TCP, TCP_KEEPCNT, &count, sizeof(count));
-    }
-#endif
     if (t.tos >= 0) {
         if (ss_setsockopt(fd, IPPROTO_IP, IP_TOS, &t.tos, sizeof(t.tos)) < 0 && ss_socket_error() != ENOPROTOOPT) {
             LOGE("setting ipv4 dscp failed: %d", ss_socket_error());

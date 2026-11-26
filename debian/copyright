@@ -58,11 +58,6 @@ Copyright: 2011-2012, Dustin Lundquist <dustin@null-ptr.net>
            2011, Manuel Kasper <mk@neon1.net>
 License: BSD-2-clause
 
-Files: src/ss-nat
-Copyright: 2015, OpenWrt-dist
-           2015, Jian Chang <aa65535@live.com>
-License: GPL-3+
-
 Files: src/uthash.h
 Copyright: 2003-2016, Troy D. Hanson
 License: BSD-1-clause

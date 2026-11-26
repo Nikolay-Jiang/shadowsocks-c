@@ -326,7 +326,7 @@ compilação nativa e cruzada. Os scripts antigos de Docker/MinGW foram removido
 Para obter uma lista detalhada e completa de todos os argumentos suportados,
 você pode consultar as páginas de manual dos aplicativos, respectivamente.
 
-     ss-[local|redir|server|tunnel|manager]
+     ss-[local|server|tunnel|manager]
 
        -s <server_host>            Nome do host ou endereço IP de seu servidor remoto.
 
@@ -353,7 +353,6 @@ você pode consultar as páginas de manual dos aplicativos, respectivamente.
        [-n <number>]               Número máximo de arquivos abertos.
 
        [-i <interface>]            Interface de rede a ser vinculada.
-                                   (não disponível no modo redir)
 
        [-b <local_address>]        Endereço local para ligar.
                                    Para servidores: Especifique o endereço local a ser usado
@@ -365,13 +364,9 @@ você pode consultar as páginas de manual dos aplicativos, respectivamente.
                                    conexões com o servidor.
 
        [-u]                        Habilita retransmissão UDP.
-                                   (TPROXY é necessário no modo redir)
 
        [-U]                        Ativa a retransmissão UDP e desativa a retransmissão TCP.
                                    (não disponível no modo local)
-
-       [-T]                        Use tproxy em vez de redirecionar. (para tcp)
-                                   (disponível apenas no modo redir)
 
        [-L <addr>:<port>]          Endereço e porta do servidor de destino
                                    para encaminhamento de porta local.
@@ -407,197 +402,6 @@ você pode consultar as páginas de manual dos aplicativos, respectivamente.
                                    (disponível apenas no modo gerenciador)
 
        [--key <key_in_base64>]     Chave do seu servidor remoto.
-
-## proxy transparente
-
-O mais recente shadowsocks-libev forneceu um modo *redir*. Você pode configurar sua caixa ou roteador baseado em Linux para fazer proxy de todo o tráfego TCP de forma transparente, o que é útil se você usar um roteador com OpenWRT.
-
-    # Criar nova cadeia
-    iptables -t nat -N SHADOWSOCKS
-    iptables -t mangle -N SHADOWSOCKS
-
-    # Ignore os endereços do seu servidor shadowsocks
-    # É muito IMPORTANTE, apenas tome cuidado.
-    iptables -t nat -A SHADOWSOCKS -d 123.123.123.123 -j RETURN
-
-    # Ignore LANs e quaisquer outros endereços que você gostaria de ignorar o proxy
-    # Veja Wikipedia e RFC5735 para lista completa de redes reservadas.
-    # Consulte ashi009/bestroutetb para obter uma lista de rotas CHN altamente otimizada.
-    iptables -t nat -A SHADOWSOCKS -d 0.0.0.0/8 -j RETURN
-    iptables -t nat -A SHADOWSOCKS -d 10.0.0.0/8 -j RETURN
-    iptables -t nat -A SHADOWSOCKS -d 127.0.0.0/8 -j RETURN
-    iptables -t nat -A SHADOWSOCKS -d 169.254.0.0/16 -j RETURN
-    iptables -t nat -A SHADOWSOCKS -d 172.16.0.0/12 -j RETURN
-    iptables -t nat -A SHADOWSOCKS -d 192.168.0.0/16 -j RETURN
-    iptables -t nat -A SHADOWSOCKS -d 224.0.0.0/4 -j RETURN
-    iptables -t nat -A SHADOWSOCKS -d 240.0.0.0/4 -j RETURN
-
-    # Qualquer outra coisa deve ser redirecionada para a porta local do shadowsocks
-    iptables -t nat -A SHADOWSOCKS -p tcp -j REDIRECT --to-ports 12345
-
-    # Adicione quaisquer regras UDP
-    ip route add local default dev lo table 100
-    ip rule add fwmark 1 lookup 100
-    iptables -t mangle -A SHADOWSOCKS -p udp --dport 53 -j TPROXY --on-port 12345 --tproxy-mark 0x01/0x01
-
-    # Aplicar as regras
-    iptables -t nat -A PREROUTING -p tcp -j SHADOWSOCKS
-    iptables -t mangle -A PREROUTING -j SHADOWSOCKS
-
-    # Iniciar o shadowsocks-redir
-    ss-redir -u -c /etc/config/shadowsocks.json -f /var/run/shadowsocks.pid
-
-## Proxy transparente (tproxy puro)
-
-A execução deste script no host linux pode fazer proxy de todo o tráfego de saída desta máquina (exceto o tráfego enviado para o endereço reservado). Outros hosts na mesma LAN também podem alterar seu gateway padrão para o ip deste host linux (ao mesmo tempo, alterar o servidor dns para 1.1.1.1 ou 8.8.8.8, etc.) para fazer proxy de seu tráfego de saída.
-
-> Claro, o proxy ipv6 é semelhante, basta alterar `iptables` para `ip6tables`, `ip` para `ip -6`, `127.0.0.1` para `::1`, e outros detalhes.
-
-```shell
-#!/bin/bash
-
-start_ssredir() {
-    # modifique MyIP, MyPort, etc.
-    (ss-redir -s MyIP -p MyPort -m MyMethod -k MyPasswd -b 127.0.0.1 -l 60080 --no-delay -u -T -v </dev/null &>>/var/log/ss-redir.log &)
-}
-
-stop_ssredir() {
-    kill -9 $(pidof ss-redir) &>/dev/null
-}
-
-start_iptables() {
-    ##################### SSREDIR #####################
-    iptables -t mangle -N SSREDIR
-
-    # connection-mark -> packet-mark
-    iptables -t mangle -A SSREDIR -j CONNMARK --restore-mark
-    iptables -t mangle -A SSREDIR -m mark --mark 0x2333 -j RETURN
-
-    # modifique MyIP, MyPort, etc.
-    # ignorar o tráfego enviado para o servidor ss
-    iptables -t mangle -A SSREDIR -p tcp -d MyIP --dport MyPort -j RETURN
-    iptables -t mangle -A SSREDIR -p udp -d MyIP --dport MyPort -j RETURN
-
-    # ignorar o tráfego enviado para endereços reservados
-    iptables -t mangle -A SSREDIR -d 0.0.0.0/8          -j RETURN
-    iptables -t mangle -A SSREDIR -d 10.0.0.0/8         -j RETURN
-    iptables -t mangle -A SSREDIR -d 100.64.0.0/10      -j RETURN
-    iptables -t mangle -A SSREDIR -d 127.0.0.0/8        -j RETURN
-    iptables -t mangle -A SSREDIR -d 169.254.0.0/16     -j RETURN
-    iptables -t mangle -A SSREDIR -d 172.16.0.0/12      -j RETURN
-    iptables -t mangle -A SSREDIR -d 192.0.0.0/24       -j RETURN
-    iptables -t mangle -A SSREDIR -d 192.0.2.0/24       -j RETURN
-    iptables -t mangle -A SSREDIR -d 192.88.99.0/24     -j RETURN
-    iptables -t mangle -A SSREDIR -d 192.168.0.0/16     -j RETURN
-    iptables -t mangle -A SSREDIR -d 198.18.0.0/15      -j RETURN
-    iptables -t mangle -A SSREDIR -d 198.51.100.0/24    -j RETURN
-    iptables -t mangle -A SSREDIR -d 203.0.113.0/24     -j RETURN
-    iptables -t mangle -A SSREDIR -d 224.0.0.0/4        -j RETURN
-    iptables -t mangle -A SSREDIR -d 240.0.0.0/4        -j RETURN
-    iptables -t mangle -A SSREDIR -d 255.255.255.255/32 -j RETURN
-
-    # marca o primeiro pacote da conexão
-    iptables -t mangle -A SSREDIR -p tcp --syn                      -j MARK --set-mark 0x2333
-    iptables -t mangle -A SSREDIR -p udp -m conntrack --ctstate NEW -j MARK --set-mark 0x2333
-
-    # packet-mark -> connection-mark
-    iptables -t mangle -A SSREDIR -j CONNMARK --save-mark
-
-    ##################### OUTPUT #####################
-    # proxy the outgoing traffic from this machine
-    iptables -t mangle -A OUTPUT -p tcp -m addrtype --src-type LOCAL ! --dst-type LOCAL -j SSREDIR
-    iptables -t mangle -A OUTPUT -p udp -m addrtype --src-type LOCAL ! --dst-type LOCAL -j SSREDIR
-
-    ##################### PREROUTING #####################
-    # proxy traffic passing through this machine (other->other)
-    iptables -t mangle -A PREROUTING -p tcp -m addrtype ! --src-type LOCAL ! --dst-type LOCAL -j SSREDIR
-    iptables -t mangle -A PREROUTING -p udp -m addrtype ! --src-type LOCAL ! --dst-type LOCAL -j SSREDIR
-
-    # hand over the marked package to TPROXY for processing
-    iptables -t mangle -A PREROUTING -p tcp -m mark --mark 0x2333 -j TPROXY --on-ip 127.0.0.1 --on-port 60080
-    iptables -t mangle -A PREROUTING -p udp -m mark --mark 0x2333 -j TPROXY --on-ip 127.0.0.1 --on-port 60080
-}
-
-stop_iptables() {
-    ##################### PREROUTING #####################
-    iptables -t mangle -D PREROUTING -p tcp -m mark --mark 0x2333 -j TPROXY --on-ip 127.0.0.1 --on-port 60080 &>/dev/null
-    iptables -t mangle -D PREROUTING -p udp -m mark --mark 0x2333 -j TPROXY --on-ip 127.0.0.1 --on-port 60080 &>/dev/null
-
-    iptables -t mangle -D PREROUTING -p tcp -m addrtype ! --src-type LOCAL ! --dst-type LOCAL -j SSREDIR &>/dev/null
-    iptables -t mangle -D PREROUTING -p udp -m addrtype ! --src-type LOCAL ! --dst-type LOCAL -j SSREDIR &>/dev/null
-
-    ##################### OUTPUT #####################
-    iptables -t mangle -D OUTPUT -p tcp -m addrtype --src-type LOCAL ! --dst-type LOCAL -j SSREDIR &>/dev/null
-    iptables -t mangle -D OUTPUT -p udp -m addrtype --src-type LOCAL ! --dst-type LOCAL -j SSREDIR &>/dev/null
-
-    ##################### SSREDIR #####################
-    iptables -t mangle -F SSREDIR &>/dev/null
-    iptables -t mangle -X SSREDIR &>/dev/null
-}
-
-start_iproute2() {
-    ip route add local default dev lo table 100
-    ip rule  add fwmark 0x2333        table 100
-}
-
-stop_iproute2() {
-    ip rule  del   table 100 &>/dev/null
-    ip route flush table 100 &>/dev/null
-}
-
-start_resolvconf() {
-    # or nameserver 8.8.8.8, etc.
-    echo "nameserver 1.1.1.1" >/etc/resolv.conf
-}
-
-stop_resolvconf() {
-    echo "nameserver 114.114.114.114" >/etc/resolv.conf
-}
-
-start() {
-    echo "start ..."
-    start_ssredir
-    start_iptables
-    start_iproute2
-    start_resolvconf
-    echo "start end"
-}
-
-stop() {
-    echo "stop ..."
-    stop_resolvconf
-    stop_iproute2
-    stop_iptables
-    stop_ssredir
-    echo "stop end"
-}
-
-restart() {
-    stop
-    sleep 1
-    start
-}
-
-main() {
-    if [ $# -eq 0 ]; then
-        echo "usage: $0 start|stop|restart ..."
-        return 1
-    fi
-
-    for funcname in "$@"; do
-        if [ "$(type -t $funcname)" != 'function' ]; then
-            echo "'$funcname' not a shell function"
-            return 1
-        fi
-    done
-
-    for funcname in "$@"; do
-        $funcname
-    done
-    return 0
-}
-main "$@"
-```
 
 ## Dicas de segurança
 

@@ -2,7 +2,7 @@
 #ifndef SS_RELAY_TCP_HPP
 #define SS_RELAY_TCP_HPP
 
-// The TCP relay shared by ss-local, ss-tunnel, ss-redir and ss-server,
+// The TCP relay shared by ss-local, ss-tunnel and ss-server,
 // replacing the four hand-copied sets of accept/recv/send/close callbacks.
 //
 // Ownership
@@ -39,7 +39,7 @@
 
 namespace ss::relay {
 
-enum class Kind : std::uint8_t { local, tunnel, redir, server };
+enum class Kind : std::uint8_t { local, tunnel, server };
 
 // The ACL module (acl.cpp), for the binaries that link it.
 struct AclHooks {
@@ -81,7 +81,6 @@ struct TcpConfig {
     bool printable_salt           = false; // ss-local experiment
     bool acl                      = false; // with `acl_hooks` set
     AclHooks acl_hooks;
-    bool tproxy                   = false; // ss-redir: the target is the local address
     bool vpn                      = false; // Android: protect sockets, no local DNS for ACL
     const char *label             = "";    // ss-server: the port, for logs
     SocketTuning upstream;

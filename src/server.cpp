@@ -1991,7 +1991,7 @@ Same behavior as `-d`; see that option for details. Short alias: `-d`.
             else
                 LOGI("udp server listening at %s:%s", host ? host : "0.0.0.0", port);
             // Setup UDP
-            auto udp_fd = ss::relay::open_udp_listener(host, port, false, reuse_port != 0);
+            auto udp_fd = ss::relay::open_udp_listener(host, port, reuse_port != 0);
             if (!udp_fd)
                 continue;
             if (!udp_relay.listen(*udp_fd)) {

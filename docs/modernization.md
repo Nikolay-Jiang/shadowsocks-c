@@ -15,7 +15,7 @@ Amended in the C++20 rewrite: the unauthenticated stream ciphers
 (`aes-*-cfb`, `aes-*-ctr`, `camellia-*-cfb`, `chacha20`, `chacha20-ietf`,
 `salsa20`, and before them RC4 and `table`) are removed in every build. A
 configuration naming one fails at startup with a message pointing to an AEAD
-method. Linux redirection/netfilter remains Linux-only.
+method. Linux netfilter features remain Linux-only.
 
 The sources are moving from C11 to C++20 module by module, with an explicit
 ownership model and no heap allocation after startup. The public

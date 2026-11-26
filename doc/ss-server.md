@@ -13,7 +13,7 @@ It is a port of the original shadowsocks created by clowwindy.
 *shadowsocks-c* is written in pure C and takes advantage of libuv to
 achieve both high performance and low resource consumption.
 
-*shadowsocks-c* consists of five components.
+*shadowsocks-c* consists of four components.
 ss-server(1) runs on a remote server to provide secured tunnel service.
 For more information, check out shadowsocks-libev(8).
 
@@ -70,7 +70,6 @@ please try ss-manager tool. See ss-manager(8) for details.
 
 ss-local(1),
 ss-tunnel(1),
-ss-redir(1),
 ss-manager(1),
 ssctl(1),
 shadowsocks-libev(8),

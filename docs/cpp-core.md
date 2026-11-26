@@ -71,13 +71,13 @@ callbacks, a cross-thread `request_stop()`, and `after_fork()` for
 
 | File | Purpose |
 |---|---|
-| `tcp.hpp` | `TcpRelay`: listeners, a pool of `max_connections` connections, one idle-deadline timer. `Kind` selects the handshake (tunnel, SOCKS5 local, redir, server). A full pool pauses accepting until a slot frees. |
+| `tcp.hpp` | `TcpRelay`: listeners, a pool of `max_connections` connections, one idle-deadline timer. `Kind` selects the handshake (tunnel, SOCKS5 local, server). A full pool pauses accepting until a slot frees. |
 | `udp.hpp` | `UdpRelay`: sessions in a `FixedLru` over a pool of `max_udp_sessions`, one 64 KiB scratch buffer per relay. AEAD-2022 server sessions are `RefPtr`-shared between the session table and their client sockets. |
 | `codec.hpp` | `Method` (immutable, from the configuration) and per-connection `Encoder`/`Decoder` variants: plain, stream, AEAD, AEAD-2022. |
 | `resolver.hpp` | c-ares with a pool of `max_dns_queries` queries; answers reach their connection through a generation-checked handle, so a closed connection is never called back. |
 | `socket.hpp` | Upstream socket setup, TCP Fast Open, SOCKS address encoding. |
 
-Per-binary behaviour (TOS per redir port, connmark-to-TOS, nftables, manager
+Per-binary behaviour (TOS per port, connmark-to-TOS, nftables, manager
 statistics, Android protect) plugs in through hooks on the configs, so the
 engines do not link it.
 
@@ -119,7 +119,7 @@ Pools are reserved at startup and only touched slots become resident.
    come from `malloc` at startup: the IP-set trie frees nodes as it merges
    prefixes, and its size depends on the ACL file, so a bump arena would
    have to reserve for the worst case.
-6. One TCP engine for ss-tunnel, ss-local, ss-redir and ss-server.
+6. One TCP engine for ss-tunnel, ss-local and ss-server.
 7. One UDP engine.
 8. Library heaps for libuv, c-ares and Mbed TLS, `heap_seal()`, and the
    capacity settings above.

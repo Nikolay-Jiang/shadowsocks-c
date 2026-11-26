@@ -72,13 +72,6 @@ jobs:
         run: |
           python3 tests/stress_test.py --bin build/bin/ --size 10
 
-      - name: ss-redir transparent proxy test (QEMU)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get install -y qemu-system-x86
-          bash tests/test_redir_qemu.sh build/bin/
-        timeout-minutes: 8
-
   asan:
     runs-on: ubuntu-latest
     steps:

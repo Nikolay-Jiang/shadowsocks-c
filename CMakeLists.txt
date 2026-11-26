@@ -18,7 +18,7 @@ include(CTest)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # C11 with GNU extensions. _GNU_SOURCE stays for the glibc-specific
-# interfaces used by the Linux-only modules (ss-redir, connmark/nftables).
+# interfaces used by the Linux-only modules (connmark/nftables).
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
@@ -151,11 +151,6 @@ if (ENABLE_COVERAGE)
         message(WARNING "lcov/genhtml not found - 'coverage' target unavailable")
     endif ()
 endif ()
-
-# Install ss-nat on Linux
-if(LINUX AND SS_INSTALL_TOOLS)
-    install(PROGRAMS src/ss-nat DESTINATION ${CMAKE_INSTALL_BINDIR})
-endif()
 
 # Install ss-setup TUI tool
 if(UNIX AND SS_INSTALL_TOOLS)

@@ -98,7 +98,6 @@ Each binary is compiled with a module define that controls conditional compilati
 | `ss-local` | `MODULE_LOCAL` | SOCKS5 client proxy |
 | `ss-server` | `MODULE_REMOTE` | Server-side proxy |
 | `ss-tunnel` | `MODULE_TUNNEL` | Port forwarding tunnel (implies `MODULE_LOCAL`) |
-| `ss-redir` | `MODULE_REDIR` | Transparent proxy via iptables (Linux only, implies `MODULE_LOCAL`) |
 | `ss-manager` | `MODULE_MANAGER` | Multi-server manager daemon (Linux only by default) |
 
 A library `libshadowsocks-c` (legacy names `libshadowsocks-libev.*` are kept) is built from the ss-local sources with `-DLIB_ONLY`. Its public API is in `src/shadowsocks.h`.
@@ -138,7 +137,7 @@ fixed hash map/LRU, intrusive list, bounded heap, `heap_guard` for third-party a
 `src/event/program.hpp` is the per-process loop, signals and timers. Connections come from fixed pools sized by
 `--max-connections`, `--max-udp-sessions` and `--max-dns-queries`; a full TCP pool pauses accepting.
 Non-owning references (DNS answers, timers) are generation-checked handles. Each binary still defines its
-own `main()` and option parsing in `local.cpp`, `tunnel.cpp`, `redir.cpp`, `server.cpp`, `manager.cpp`.
+own `main()` and option parsing in `local.cpp`, `tunnel.cpp`, `server.cpp`, `manager.cpp`.
 
 ### Compiler Flags
 

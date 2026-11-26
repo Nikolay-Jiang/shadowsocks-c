@@ -66,9 +66,8 @@ struct UdpConfig {
     AclHooks acl_hooks;
 };
 
-// Bind the UDP socket clients send to (ss-redir: transparent, with the
-// original destination reported). Returns the socket or an error.
-Result<ss_socket_t> open_udp_listener(const char *host, const char *port, bool transparent, bool reuse_port) noexcept;
+// Bind the UDP socket clients send to. Returns the socket or an error.
+Result<ss_socket_t> open_udp_listener(const char *host, const char *port, bool reuse_port) noexcept;
 
 class UdpRelay;
 
@@ -175,8 +174,7 @@ private:
     };
 
     void receive(Listener &listener) noexcept;
-    void client_packet(Listener &listener, const sockaddr_storage &from, std::span<std::uint8_t> packet,
-                       const sockaddr_storage *original_dst) noexcept;
+    void client_packet(Listener &listener, const sockaddr_storage &from, std::span<std::uint8_t> packet) noexcept;
     void server_packet(Listener &listener, const sockaddr_storage &from, std::span<std::uint8_t> packet) noexcept;
     void server_forward(std::uint8_t listener, const sockaddr_storage &client, const sockaddr *target,
                         RefPtr<Shared2022> shared, std::span<const std::uint8_t> payload) noexcept;

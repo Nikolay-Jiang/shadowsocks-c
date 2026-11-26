@@ -326,7 +326,7 @@ struct Relays {
         config.rx         = &rx;
         config.on_traffic = &stat_update_cb;
 #endif
-        auto fd = ss::relay::open_udp_listener(host, port, false, reuse_port != 0);
+        auto fd = ss::relay::open_udp_listener(host, port, reuse_port != 0);
         if (!fd || !udp.init(*loop, method, config, NULL)) {
             return -1;
         }

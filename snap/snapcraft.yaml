@@ -30,10 +30,6 @@ apps:
     daemon: simple
     plugs: [network, network-bind]
 
-  ss-redir:
-    command: usr/bin/ss-redir
-    plugs: [network, network-bind]
-
   ss-tunnel:
     command: usr/bin/ss-tunnel
     plugs: [network, network-bind]
