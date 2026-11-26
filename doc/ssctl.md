@@ -16,6 +16,14 @@ Commands are `users`, `conns`, `anon` and `stats`. The control socket is
 created with mode `0600`; run *ssctl* as the same user as *ss-server* (or as
 root).
 
+\section ssctl_output OUTPUT
+
+Text tables shorten user IDs longer than six characters to six characters
+followed by `...`, and show the reserved anonymous row as `anony`. `LAST`
+uses seconds, minutes or hours and becomes `-` after one day; `AGE` keeps
+counting in hours. `TX`, `RX` and token counters use B/KB/MB/GB/TB. JSON
+output keeps raw numeric values.
+
 \section ssctl_options OPTIONS
 
 `-s <path>`, `--socket <path>`

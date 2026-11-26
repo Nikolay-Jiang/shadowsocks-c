@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "control.hpp"
+#include "control_format.hpp"
 
 #include <algorithm>
 #include <cstdarg>
@@ -249,15 +250,24 @@ void ControlServer::users_text()
                 add_ip(session.client());
             }
         });
-        appendf("%s\t%u\t%u\t%llu\t%llu\t%llus\t%u\n", data_.method->user_id(static_cast<std::uint8_t>(i)),
-                s.tcp_current, s.udp_current, static_cast<unsigned long long>(s.tx),
-                static_cast<unsigned long long>(s.rx), static_cast<unsigned long long>(s.last_seen == 0 ? 0 : age_secs(now, s.last_seen)),
-                ips);
+        char user[80];
+        char last[16];
+        char tx[32];
+        char rx[32];
+        format::format_user(user, sizeof(user), data_.method->user_id(static_cast<std::uint8_t>(i)));
+        format::format_age(last, sizeof(last), s.last_seen == 0 ? 0 : age_secs(now, s.last_seen), true);
+        format::format_bytes(tx, sizeof(tx), s.tx);
+        format::format_bytes(rx, sizeof(rx), s.rx);
+        appendf("%s\t%u\t%u\t%s\t%s\t%s\t%u\n", user, s.tcp_current, s.udp_current, tx, rx, last, ips);
     }
     const auto &anon = data_.users->anonymous();
-    appendf("anonymous\t%u\t%u\t%llu\t%llu\t%llus\t%u\n", anon.tcp_current, anon.udp_current,
-            static_cast<unsigned long long>(anon.tx), static_cast<unsigned long long>(anon.rx),
-            static_cast<unsigned long long>(anon.last_seen == 0 ? 0 : age_secs(now, anon.last_seen)),
+    char last[16];
+    char tx[32];
+    char rx[32];
+    format::format_age(last, sizeof(last), anon.last_seen == 0 ? 0 : age_secs(now, anon.last_seen), true);
+    format::format_bytes(tx, sizeof(tx), anon.tx);
+    format::format_bytes(rx, sizeof(rx), anon.rx);
+    appendf("anony\t%u\t%u\t%s\t%s\t%s\t%u\n", anon.tcp_current, anon.udp_current, tx, rx, last,
             data_.limiter != nullptr ? data_.limiter->tracked() : 0);
 }
 
@@ -300,27 +310,38 @@ void ControlServer::conns_text(bool udp)
         if (count++ >= 200) {
             return;
         }
+        char user[80];
         char peer[128] = {};
         char target[300] = {};
+        char age[16];
+        char tx[32];
+        char rx[32];
+        format::format_user(user, sizeof(user),
+                            conn.is_anonymous() ? "anony" : data_.method->user_id(conn.user_index()));
         format_peer(conn.peer(), peer, sizeof(peer));
         format_target(conn.target(), target, sizeof(target));
-        const char *id = conn.is_anonymous() ? "anonymous" : data_.method->user_id(conn.user_index());
-        appendf("%s\ttcp\t%s\t%s\t%llus\t%llu\t%llu\n", id, peer, target,
-                static_cast<unsigned long long>(age_secs(now, conn.started_ms())),
-                static_cast<unsigned long long>(conn.conn_tx()), static_cast<unsigned long long>(conn.conn_rx()));
+        format::format_age(age, sizeof(age), age_secs(now, conn.started_ms()), false);
+        format::format_bytes(tx, sizeof(tx), conn.conn_tx());
+        format::format_bytes(rx, sizeof(rx), conn.conn_rx());
+        appendf("%s\ttcp\t%s\t%s\t%s\t%s\t%s\n", user, peer, target, age, tx, rx);
     });
     if (udp) {
         data_.udp->for_each([&](const UdpSession &session) {
             if (count++ >= 200) {
                 return;
             }
+            char user[80];
             char peer[128] = {};
+            char age[16];
+            char tx[32];
+            char rx[32];
+            format::format_user(user, sizeof(user),
+                                session.is_anonymous() ? "anony" : data_.method->user_id(session.user_index()));
             format_peer(session.client(), peer, sizeof(peer));
-            const char *id = session.is_anonymous() ? "anonymous" : data_.method->user_id(session.user_index());
-            appendf("%s\tudp\t%s\t-\t%llus\t%llu\t%llu\n", id, peer,
-                    static_cast<unsigned long long>(age_secs(now, session.started_ms())),
-                    static_cast<unsigned long long>(session.conn_tx()),
-                    static_cast<unsigned long long>(session.conn_rx()));
+            format::format_age(age, sizeof(age), age_secs(now, session.started_ms()), false);
+            format::format_bytes(tx, sizeof(tx), session.conn_tx());
+            format::format_bytes(rx, sizeof(rx), session.conn_rx());
+            appendf("%s\tudp\t%s\t-\t%s\t%s\t%s\n", user, peer, age, tx, rx);
         });
     }
     if (count > 200) {
@@ -392,11 +413,14 @@ void ControlServer::anon_text()
         if (count++ >= 200) {
             return;
         }
-        appendf("%s\t%u\t%u\t%u\t%llu\t%llu\t%llus\t%s\n", peer.address, peer.tcp_connections, peer.udp_sessions,
-                peer.pending, static_cast<unsigned long long>(peer.tx_bytes),
-                static_cast<unsigned long long>(peer.tokens),
-                static_cast<unsigned long long>(age_secs(now, peer.last_seen)),
-                peer.throttled ? "throttled" : "ok");
+        char last[16];
+        char tx[32];
+        char tokens[32];
+        format::format_age(last, sizeof(last), age_secs(now, peer.last_seen), true);
+        format::format_bytes(tx, sizeof(tx), peer.tx_bytes);
+        format::format_bytes(tokens, sizeof(tokens), peer.tokens);
+        appendf("%s\t%u\t%u\t%u\t%s\t%s\t%s\t%s\n", peer.address, peer.tcp_connections, peer.udp_sessions,
+                peer.pending, tx, tokens, last, peer.throttled ? "throttled" : "ok");
     });
     if (count > 200) {
         append("...\ttruncated\n");
@@ -435,11 +459,13 @@ void ControlServer::anon_json()
 
 void ControlServer::stats_text()
 {
-    appendf("tx\t%llu\nrx\t%llu\ntcp_live\t%u\ntcp_refused\t%llu\nudp_sessions\t%u\nusers\t%u\ntracked_ips\t%u\n",
-            static_cast<unsigned long long>(data_.tx != nullptr ? *data_.tx : 0),
-            static_cast<unsigned long long>(data_.rx != nullptr ? *data_.rx : 0), data_.tcp->live(),
-            static_cast<unsigned long long>(data_.tcp->refused()), data_.udp->sessions(),
-            data_.method != nullptr ? data_.method->user_count() : 0,
+    char tx[32];
+    char rx[32];
+    format::format_bytes(tx, sizeof(tx), data_.tx != nullptr ? *data_.tx : 0);
+    format::format_bytes(rx, sizeof(rx), data_.rx != nullptr ? *data_.rx : 0);
+    appendf("tx\t%s\nrx\t%s\ntcp_live\t%u\ntcp_refused\t%llu\nudp_sessions\t%u\nusers\t%u\ntracked_ips\t%u\n",
+            tx, rx, data_.tcp->live(), static_cast<unsigned long long>(data_.tcp->refused()),
+            data_.udp->sessions(), data_.method != nullptr ? data_.method->user_count() : 0,
             data_.limiter != nullptr ? data_.limiter->tracked() : 0);
 }
 
