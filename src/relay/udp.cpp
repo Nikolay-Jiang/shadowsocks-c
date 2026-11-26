@@ -529,6 +529,13 @@ void UdpRelay::expire(UdpSession &session) noexcept
     }
 }
 
+std::uint32_t UdpRelay::drop_user(std::uint8_t index) noexcept
+{
+    return sessions_.erase_if([index](const Key &, const PoolPtr<UdpSession> &session) {
+        return session && session->user_index() == index;
+    });
+}
+
 void UdpRelay::client_packet(Listener &listener, const sockaddr_storage &from, std::span<std::uint8_t> packet,
                              const sockaddr_storage *original_dst) noexcept
 {
@@ -669,6 +676,9 @@ void UdpRelay::server_packet(Listener &listener, const sockaddr_storage &from, s
     } else if (const crypto::Psk *psk = method_->psk()) {
         auto pkt = crypto::udp2022_decrypt(*psk, packet, out_, method_->identity_table());
         if (pkt) {
+            if (config_.require_identity && pkt->user_index == crypto::kAnonymousIdentity) {
+                return;
+            }
             // A new client session enters the table only once its first
             // packet passes the timestamp and replay checks, so replayed
             // stale packets cannot evict live sessions.

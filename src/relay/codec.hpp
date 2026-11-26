@@ -48,9 +48,15 @@ public:
     static constexpr std::size_t kMaxOverhead = 2048;
 
     // SIP023 users (server). IDs are stored in the same order as the
-    // identity table indexes the relay statistics use.
-    Status add_user(const char *id, const char *key) noexcept;
-    std::uint32_t user_count() const noexcept { return user_count_; }
+    // identity table indexes the relay statistics use. Slots are retired
+    // instead of being reused while old UDP sessions may still name them.
+    Result<std::uint8_t> add_user(const char *id, const char *key) noexcept;
+    Result<std::uint8_t> remove_user(const char *id) noexcept;
+    bool release_user(std::uint8_t index) noexcept;
+    bool user_active(std::uint8_t index) const noexcept;
+    const crypto::Psk *user_key(std::uint8_t index) const noexcept { return identities_.key(index); }
+    std::uint32_t user_count() const noexcept { return active_count_; }
+    std::uint32_t user_slots() const noexcept { return user_count_; }
     const char *user_id(std::uint8_t index) const noexcept;
     const crypto::IdentityTable *identity_table() const noexcept { return &identities_; }
     const crypto::Psk *identity_psk() const noexcept { return identity_psk_ ? &*identity_psk_ : nullptr; }
@@ -69,15 +75,17 @@ private:
     struct UserEntry {
         char id[65] = {};
         bool used   = false;
+        bool active = false;
     };
 
     Key key_{};
     std::optional<crypto::Psk> identity_psk_;
     crypto::IdentityTable identities_;
     std::array<UserEntry, crypto::kMaxIdentityUsers> users_{};
-    std::uint32_t user_count_ = 0;
-    Role role_                = Role::client;
-    bool bloom_ready_         = false;
+    std::uint32_t user_count_   = 0; // high-water slot count
+    std::uint32_t active_count_ = 0;
+    Role role_                  = Role::client;
+    bool bloom_ready_           = false;
     crypto::SaltPool salt_pool_;
 };
 

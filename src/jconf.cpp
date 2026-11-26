@@ -470,6 +470,10 @@ read_jconf(const char *file)
                 check_json_value_type(value, json_boolean,
                                       "invalid config file: option 'access_log' must be a boolean");
                 conf.access_log = value->u.boolean;
+            } else if (strcmp(name, "require_identity") == 0) {
+                check_json_value_type(value, json_boolean,
+                                      "invalid config file: option 'require_identity' must be a boolean");
+                conf.require_identity = value->u.boolean;
             } else if (strcmp(name, "server_port") == 0) {
                 conf.remote_port = to_string(value);
             } else if (strcmp(name, "local_address") == 0) {
@@ -605,4 +609,166 @@ read_jconf(const char *file)
 
     // The tree and the file text go with the scratch arena.
     return &conf;
+}
+
+int
+read_jconf_users(const char *file, ss_users_conf_t *out, char *error, size_t error_size)
+{
+    if (file == NULL || out == NULL || error == NULL || error_size == 0) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+    error[0] = '\0';
+
+    FILE *f = fopen(file, "rb");
+    if (f == NULL) {
+        snprintf(error, error_size, "cannot open config file");
+        return -1;
+    }
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        snprintf(error, error_size, "cannot seek config file");
+        return -1;
+    }
+    long pos = ftell(f);
+    if (pos < 0 || pos >= MAX_CONF_SIZE) {
+        fclose(f);
+        snprintf(error, error_size, "config file is too large");
+        return -1;
+    }
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        snprintf(error, error_size, "cannot seek config file");
+        return -1;
+    }
+
+    // Reload is a control-plane operation, not the per-packet path. A static
+    // buffer keeps the users-only parser independent of the startup arena.
+    static char buf[MAX_CONF_SIZE + 1];
+    std::size_t len = static_cast<std::size_t>(pos);
+    if (len != 0 && fread(buf, len, 1, f) != 1) {
+        fclose(f);
+        snprintf(error, error_size, "cannot read config file");
+        return -1;
+    }
+    fclose(f);
+    buf[len] = '\0';
+
+    ss::MonotonicArena scratch;
+    if (!scratch.reserve(len + 1 + 128 * (len + 1))) {
+        snprintf(error, error_size, "out of memory");
+        return -1;
+    }
+    json_settings settings = { 0UL, 0, scratch_alloc, scratch_free, &scratch, 0 };
+    char parse_error[512] = {};
+    json_value *obj = json_parse_ex(&settings, buf, len, parse_error);
+    if (obj == NULL) {
+        snprintf(error, error_size, "invalid JSON: %s", parse_error);
+        return -1;
+    }
+    if (obj->type != json_object) {
+        json_value_free_ex(&settings, obj);
+        snprintf(error, error_size, "config root must be an object");
+        return -1;
+    }
+
+    auto copy_string = [&](char *dst, std::size_t cap, const json_value *value, const char *name) {
+        if (value->type != json_string) {
+            snprintf(error, error_size, "%s must be a string", name);
+            return false;
+        }
+        if (value->u.string.length >= cap) {
+            snprintf(error, error_size, "%s is too long", name);
+            return false;
+        }
+        memcpy(dst, value->u.string.ptr, value->u.string.length);
+        dst[value->u.string.length] = '\0';
+        return true;
+    };
+
+    bool ok = true;
+    for (unsigned int i = 0; i < obj->u.object.length && ok; ++i) {
+        const char *name  = obj->u.object.values[i].name;
+        json_value *value = obj->u.object.values[i].value;
+        if (strcmp(name, "method") == 0) {
+            ok = copy_string(out->method, sizeof(out->method), value, "method");
+        } else if (strcmp(name, "password") == 0) {
+            ok = copy_string(out->password, sizeof(out->password), value, "password");
+        } else if (strcmp(name, "key") == 0) {
+            ok = copy_string(out->key, sizeof(out->key), value, "key");
+        } else if (strcmp(name, "server_port") == 0) {
+            if (value->type == json_string) {
+                ok = copy_string(out->server_port, sizeof(out->server_port), value, "server_port");
+            } else if (value->type == json_integer) {
+                snprintf(out->server_port, sizeof(out->server_port), "%" PRId64, value->u.integer);
+            } else {
+                snprintf(error, error_size, "server_port must be a string or integer");
+                ok = false;
+            }
+            out->server_port_set = ok;
+        } else if (strcmp(name, "require_identity") == 0) {
+            if (value->type != json_boolean) {
+                snprintf(error, error_size, "require_identity must be a boolean");
+                ok = false;
+            } else {
+                out->require_identity     = value->u.boolean;
+                out->require_identity_set = 1;
+            }
+        } else if (strcmp(name, "users") == 0) {
+            if (value->type != json_object) {
+                snprintf(error, error_size, "users must be an object");
+                ok = false;
+                break;
+            }
+            if (value->u.object.length > MAX_USER_NUM) {
+                snprintf(error, error_size, "too many users (max %d)", MAX_USER_NUM);
+                ok = false;
+                break;
+            }
+            out->users_present = 1;
+            out->user_num      = static_cast<int>(value->u.object.length);
+            for (unsigned int j = 0; j < value->u.object.length; ++j) {
+                const json_value *v = value->u.object.values[j].value;
+                const char *id      = value->u.object.values[j].name;
+                std::size_t id_len  = value->u.object.values[j].name_length;
+                if (id_len == 0 || id_len >= sizeof(out->users[j].id)) {
+                    snprintf(error, error_size, "invalid user id");
+                    ok = false;
+                    break;
+                }
+                if (v->type != json_string) {
+                    snprintf(error, error_size, "user %s key must be a string", id);
+                    ok = false;
+                    break;
+                }
+                if (v->u.string.length >= sizeof(out->users[j].key) || v->u.string.length == 0) {
+                    snprintf(error, error_size, "user %s key has an invalid length", id);
+                    ok = false;
+                    break;
+                }
+                memcpy(out->users[j].id, id, id_len);
+                out->users[j].id[id_len] = '\0';
+                memcpy(out->users[j].key, v->u.string.ptr, v->u.string.length);
+                out->users[j].key[v->u.string.length] = '\0';
+            }
+        }
+    }
+
+    json_value_free_ex(&settings, obj);
+    if (!ok) {
+        return -1;
+    }
+    if (!out->users_present) {
+        snprintf(error, error_size, "users field is required");
+        return -1;
+    }
+    if (out->method[0] == '\0') {
+        snprintf(error, error_size, "method field is required");
+        return -1;
+    }
+    if (out->password[0] == '\0' && out->key[0] == '\0') {
+        snprintf(error, error_size, "password or key field is required");
+        return -1;
+    }
+    return 0;
 }

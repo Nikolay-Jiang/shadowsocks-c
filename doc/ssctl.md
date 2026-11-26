@@ -14,7 +14,8 @@ default, or as JSON with `--json`.
 
 Commands are `users`, `conns`, `anon` and `stats`. The control socket is
 created with mode `0600`; run *ssctl* as the same user as *ss-server* (or as
-root).
+root). The socket also accepts an internal `reload` request used by a node
+agent to apply users-only changes; *ssctl* itself does not send it.
 
 \section ssctl_output OUTPUT
 

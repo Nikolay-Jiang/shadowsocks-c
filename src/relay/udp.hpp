@@ -60,6 +60,7 @@ struct UdpConfig {
     void (*on_traffic)()          = nullptr;
     UserRegistry *users           = nullptr;
     PeerLimiter *limiter          = nullptr;
+    bool require_identity         = false; // server: drop datagrams without a SIP023 identity
     bool access_log               = false;
     bool acl                      = false; // server: with `acl_hooks` set, as for TCP
     AclHooks acl_hooks;
@@ -137,6 +138,9 @@ public:
     bool closed() const noexcept;
 
     std::uint32_t sessions() const noexcept { return sessions_.size(); }
+
+    // Drop every UDP session that authenticated as `index`.
+    std::uint32_t drop_user(std::uint8_t index) noexcept;
 
     template <class F>
     void for_each(F &&f)

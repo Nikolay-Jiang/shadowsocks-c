@@ -124,10 +124,9 @@ Method::~Method()
     }
 }
 
-Status Method::add_user(const char *id, const char *key) noexcept
+Result<std::uint8_t> Method::add_user(const char *id, const char *key) noexcept
 {
-    if (role_ != Role::server || id == nullptr || key == nullptr || !is_2022_aes()
-        || user_count_ >= crypto::kMaxIdentityUsers) {
+    if (role_ != Role::server || id == nullptr || key == nullptr || !is_2022_aes()) {
         return fail(Errc::config);
     }
     std::size_t id_len = std::strlen(id);
@@ -145,12 +144,74 @@ Status Method::add_user(const char *id, const char *key) noexcept
     }
     std::array<std::uint8_t, crypto::kIdentityLen> hash{};
     crypto::identity_hash_16(*user, hash);
-    auto index = static_cast<std::uint8_t>(user_count_);
-    SS_TRY(identities_.add(hash, *user, index));
-    std::memcpy(users_[index].id, id, id_len + 1);
-    users_[index].used = true;
-    ++user_count_;
-    return {};
+
+    std::uint32_t slot = 0;
+    while (slot < user_count_ && users_[slot].used) {
+        ++slot;
+    }
+    if (slot == user_count_) {
+        if (user_count_ >= crypto::kMaxIdentityUsers) {
+            return fail(Errc::exhausted);
+        }
+        ++user_count_;
+    }
+    const auto index = static_cast<std::uint8_t>(slot);
+    Status added = identities_.add(hash, *user, index);
+    if (!added) {
+        // An unused high-water slot can stay allocated; it is reused by the
+        // next add and does not affect the active count.
+        return fail(added.error().code);
+    }
+    std::memcpy(users_[slot].id, id, id_len + 1);
+    users_[slot].used   = true;
+    users_[slot].active = true;
+    ++active_count_;
+    return index;
+}
+
+Result<std::uint8_t> Method::remove_user(const char *id) noexcept
+{
+    if (role_ != Role::server || id == nullptr) {
+        return fail(Errc::invalid);
+    }
+    for (std::uint32_t i = 0; i < user_count_; ++i) {
+        if (!users_[i].used || !users_[i].active || std::strcmp(users_[i].id, id) != 0) {
+            continue;
+        }
+        const crypto::Psk *key = identities_.key(static_cast<std::uint8_t>(i));
+        if (key == nullptr) {
+            return fail(Errc::invalid);
+        }
+        std::array<std::uint8_t, crypto::kIdentityLen> hash{};
+        crypto::identity_hash_16(*key, hash);
+        if (!identities_.erase_identity(hash)) {
+            return fail(Errc::invalid);
+        }
+        users_[i].active = false;
+        --active_count_;
+        return static_cast<std::uint8_t>(i);
+    }
+    return fail(Errc::invalid);
+}
+
+bool Method::release_user(std::uint8_t index) noexcept
+{
+    if (index >= user_count_ || !users_[index].used || users_[index].active) {
+        return false;
+    }
+    if (!identities_.release_slot(index)) {
+        return false;
+    }
+    users_[index] = UserEntry{};
+    while (user_count_ != 0 && !users_[user_count_ - 1].used) {
+        --user_count_;
+    }
+    return true;
+}
+
+bool Method::user_active(std::uint8_t index) const noexcept
+{
+    return index < user_count_ && users_[index].used && users_[index].active;
 }
 
 const char *Method::user_id(std::uint8_t index) const noexcept

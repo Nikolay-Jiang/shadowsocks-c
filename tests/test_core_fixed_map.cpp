@@ -104,6 +104,29 @@ void test_lru_order()
     SS_CHECK(n == 3 && order[0] == 3 && order[1] == 1 && order[2] == 4);
 }
 
+void test_lru_erase_if()
+{
+    ss::FixedLru<Key, int> lru;
+    SS_CHECK(lru.reserve(8, 7));
+    for (int i = 0; i < 6; ++i) {
+        char text[2] = { static_cast<char>('a' + i), '\0' };
+        SS_CHECK(lru.emplace(key(text), i));
+    }
+    const std::uint32_t removed = lru.erase_if([](const Key &, int &value) { return value % 2 == 0; });
+    SS_CHECK(removed == 3);
+    SS_CHECK(lru.size() == 3);
+    for (int i = 0; i < 6; ++i) {
+        char text[2] = { static_cast<char>('a' + i), '\0' };
+        const int *value = lru.peek(key(text));
+        if (i % 2 == 0) {
+            SS_CHECK(value == nullptr);
+        } else {
+            SS_CHECK(value != nullptr && *value == i);
+        }
+    }
+    SS_CHECK(lru.emplace(key("z"), 9));
+}
+
 void test_lru_stable_values()
 {
     ss::FixedLru<std::uint32_t, int> lru;
@@ -142,6 +165,7 @@ int main()
     SS_RUN(test_map_backward_shift);
     SS_RUN(test_map_move_only_values);
     SS_RUN(test_lru_order);
+    SS_RUN(test_lru_erase_if);
     SS_RUN(test_lru_stable_values);
     SS_RUN(test_key_limits);
     return 0;

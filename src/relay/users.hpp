@@ -23,7 +23,23 @@ struct UserStats {
 class UserRegistry {
 public:
     void set_count(std::uint32_t count) noexcept { count_ = count; }
+    void ensure_count(std::uint32_t count) noexcept
+    {
+        if (count > count_) {
+            count_ = count;
+        }
+    }
     std::uint32_t count() const noexcept { return count_; }
+    void reset(std::uint8_t index) noexcept
+    {
+        if (index < kMaxUsers) {
+            stats_[index] = UserStats{};
+        }
+    }
+    bool reclaimable(std::uint8_t index) const noexcept
+    {
+        return index < count_ && stats_[index].tcp_current == 0 && stats_[index].udp_current == 0;
+    }
 
     UserStats &at(std::uint8_t index) noexcept { return stats_[index]; }
     const UserStats &at(std::uint8_t index) const noexcept { return stats_[index]; }

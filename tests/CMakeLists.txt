@@ -78,6 +78,18 @@ if(TARGET shadowsocks-c-static AND UNIX)
     set_tests_properties(test_local_api_cpp PROPERTIES LABELS "unit" TIMEOUT 60)
 endif()
 
+# SIP023 user slots and the users-only reload parser.
+if(TARGET shadowsocks-c-static AND UNIX)
+    add_executable(test_users_reload_cpp test_users_reload_cpp.cpp)
+    target_link_libraries(test_users_reload_cpp PRIVATE shadowsocks-c-static Threads::Threads)
+    target_compile_options(test_users_reload_cpp PRIVATE -UNDEBUG)
+    target_include_directories(test_users_reload_cpp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    ss_project_options(test_users_reload_cpp)
+    ss_strict_warnings(test_users_reload_cpp.cpp)
+    add_test(NAME test_users_reload_cpp COMMAND test_users_reload_cpp)
+    set_tests_properties(test_users_reload_cpp PROPERTIES LABELS "unit" TIMEOUT 30)
+endif()
+
 # C++ event layer (src/event) over libuv.
 ss_add_test(test_event_cpp "test_event_cpp.cpp" "ss_uv")
 ss_strict_warnings(test_event_cpp.cpp)
@@ -320,6 +332,12 @@ if(SS_BUILD_EXECUTABLES AND NOT CMAKE_CROSSCOMPILING)
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli.py
                     --bin-dir ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
         set_tests_properties(test_cli PROPERTIES LABELS "integration" TIMEOUT 60)
+        add_test(NAME test_reload
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_reload.py)
+        set_tests_properties(test_reload PROPERTIES
+            LABELS "integration"
+            TIMEOUT 90
+            ENVIRONMENT "SS_BIN_DIR=${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
         if(UNIX)
             add_executable(udp_session_eviction_client
                 udp_session_eviction_client.c ${SS_CRYPTO_TEST_SOURCES})

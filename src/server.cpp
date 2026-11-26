@@ -148,11 +148,29 @@ static int anon_ipv6_prefix         = 64;
 static int anon_max_tracked_ips     = 4096;
 static int access_log               = 0;
 static int access_log_set           = 0;
+static int require_identity         = 0;
 static char *control_socket         = NULL;
 static int user_num                 = 0;
 static ss_user_t users[MAX_USER_NUM];
 static ss::relay::UserRegistry user_registry;
 static ss::relay::PeerLimiter peer_limiter;
+
+// Pointers into main()'s stack objects and the startup config. They stay
+// valid for the process lifetime and let the control-thread reload callback
+// reach the live relays without globals for every field.
+struct ServerRuntime {
+    const char *conf_path          = nullptr;
+    const char *method             = nullptr;
+    const char *password           = nullptr;
+    const char *key                = nullptr;
+    const char *server_port        = nullptr;
+    int require_identity           = 0;
+    ss::relay::Method *method_obj  = nullptr;
+    ss::relay::UserRegistry *users = nullptr;
+    ss::relay::TcpRelay *tcp       = nullptr;
+    ss::relay::UdpRelay *udp       = nullptr;
+};
+static ServerRuntime runtime;
 
 #ifdef HAVE_SETRLIMIT
 static int nofile = 0;
@@ -268,6 +286,213 @@ stat_update_cb(void *) noexcept
 }
 
 #endif
+
+static bool
+same_psk(const ss::crypto::Psk &a, const ss::crypto::Psk &b) noexcept
+{
+    return a.size() == b.size() && sodium_memcmp(a.key().data(), b.key().data(), a.size()) == 0;
+}
+
+static void
+reclaim_retired_users() noexcept
+{
+    if (runtime.method_obj == nullptr || runtime.users == nullptr) {
+        return;
+    }
+    auto *method = runtime.method_obj;
+    for (std::uint32_t i = 0; i < method->user_slots(); ++i) {
+        const auto index = static_cast<std::uint8_t>(i);
+        if (method->user_id(index)[0] == '\0' || method->user_active(index)) {
+            continue;
+        }
+        if (runtime.users->reclaimable(index)) {
+            runtime.users->reset(index);
+            (void)method->release_user(index);
+        }
+    }
+}
+
+static bool
+reload_users(char *out, std::size_t capacity) noexcept
+{
+    if (out == nullptr || capacity == 0) {
+        return false;
+    }
+    out[0] = '\0';
+    auto error = [&](const char *message) {
+        snprintf(out, capacity, "error\t%s", message);
+        return false;
+    };
+
+    if (runtime.conf_path == nullptr || runtime.method_obj == nullptr || runtime.users == nullptr
+        || runtime.tcp == nullptr || runtime.udp == nullptr) {
+        return error("reload unavailable");
+    }
+    auto *method = runtime.method_obj;
+    if (!method->is_2022_aes()) {
+        return error("restart_required field=method");
+    }
+
+    ss_users_conf_t conf{};
+    char parse_error[256] = {};
+    if (read_jconf_users(runtime.conf_path, &conf, parse_error, sizeof(parse_error)) != 0) {
+        char message[320];
+        snprintf(message, sizeof(message), "invalid_config %s", parse_error);
+        return error(message);
+    }
+
+    if (runtime.method == nullptr || strcmp(conf.method, runtime.method) != 0) {
+        return error("restart_required field=method");
+    }
+    if (!conf.server_port_set || runtime.server_port == nullptr
+        || strcmp(conf.server_port, runtime.server_port) != 0) {
+        return error("restart_required field=server_port");
+    }
+    const char *run_secret = runtime.key != nullptr ? runtime.key : runtime.password;
+    const char *doc_secret = conf.key[0] != '\0' ? conf.key : conf.password;
+    if (run_secret == nullptr || doc_secret == nullptr) {
+        return error("restart_required field=server_psk");
+    }
+    const auto *base = method->psk();
+    if (base == nullptr) {
+        return error("restart_required field=server_psk");
+    }
+    auto doc_base = ss::crypto::Psk::from_base64(base->spec, doc_secret);
+    if (!doc_base || !same_psk(*doc_base, *base)) {
+        return error("restart_required field=server_psk");
+    }
+    const int doc_require_identity = conf.require_identity_set ? conf.require_identity : 0;
+    if (doc_require_identity != runtime.require_identity) {
+        return error("restart_required field=require_identity");
+    }
+    if (conf.user_num > static_cast<int>(ss::crypto::kMaxIdentityUsers)) {
+        return error("invalid_users too many users");
+    }
+
+    // Validate every desired user before touching the live table.
+    std::array<std::array<std::uint8_t, ss::crypto::kIdentityLen>, ss::crypto::kMaxIdentityUsers> hashes{};
+    std::array<ss::crypto::Psk, ss::crypto::kMaxIdentityUsers> keys{};
+    for (int i = 0; i < conf.user_num; ++i) {
+        if (conf.users[i].id[0] == '\0') {
+            return error("invalid_users empty user id");
+        }
+        for (int j = 0; j < i; ++j) {
+            if (strcmp(conf.users[i].id, conf.users[j].id) == 0) {
+                return error("invalid_users duplicate user id");
+            }
+        }
+        auto key = ss::crypto::Psk::from_base64(base->spec, conf.users[i].key);
+        if (!key) {
+            return error("invalid_users bad user psk");
+        }
+        if (same_psk(*key, *base)) {
+            return error("invalid_users user psk equals server psk");
+        }
+        ss::crypto::identity_hash_16(*key, hashes[i]);
+        for (int j = 0; j < i; ++j) {
+            if (memcmp(hashes[i].data(), hashes[j].data(), hashes[i].size()) == 0) {
+                return error("invalid_users duplicate user psk");
+            }
+        }
+        keys[i] = *key;
+    }
+
+    // Match current users against the desired list. A changed PSK is a
+    // remove + add, so the old slot can be retired and the new client gets a
+    // fresh identity immediately.
+    std::array<bool, ss::crypto::kMaxIdentityUsers> matched{};
+    std::array<bool, ss::crypto::kMaxIdentityUsers> needs_add{};
+    std::array<char, ss::crypto::kMaxIdentityUsers * (MAX_USER_ID_LEN + 1)> remove_ids{};
+    std::uint32_t remove_count = 0;
+    std::uint32_t add_count    = 0;
+    std::uint32_t used_slots   = 0;
+
+    for (std::uint32_t i = 0; i < method->user_slots(); ++i) {
+        const auto index = static_cast<std::uint8_t>(i);
+        const char *id   = method->user_id(index);
+        if (id[0] == '\0') {
+            continue;
+        }
+        ++used_slots;
+        if (!method->user_active(index)) {
+            continue;
+        }
+        int doc_index = -1;
+        for (int j = 0; j < conf.user_num; ++j) {
+            if (strcmp(id, conf.users[j].id) == 0) {
+                doc_index = j;
+                break;
+            }
+        }
+        if (doc_index < 0) {
+            if (remove_count >= ss::crypto::kMaxIdentityUsers) {
+                return error("invalid_users too many removals");
+            }
+            snprintf(remove_ids.data() + remove_count * (MAX_USER_ID_LEN + 1), MAX_USER_ID_LEN + 1, "%s", id);
+            ++remove_count;
+            continue;
+        }
+        matched[doc_index] = true;
+        const auto *current = method->user_key(index);
+        if (current == nullptr || !same_psk(*current, keys[doc_index])) {
+            if (remove_count >= ss::crypto::kMaxIdentityUsers) {
+                return error("invalid_users too many removals");
+            }
+            snprintf(remove_ids.data() + remove_count * (MAX_USER_ID_LEN + 1), MAX_USER_ID_LEN + 1, "%s", id);
+            ++remove_count;
+            needs_add[doc_index] = true;
+        }
+    }
+    for (int i = 0; i < conf.user_num; ++i) {
+        if (!matched[i]) {
+            needs_add[i] = true;
+        }
+        if (needs_add[i]) {
+            ++add_count;
+        }
+    }
+
+    if (used_slots + add_count - remove_count > ss::crypto::kMaxIdentityUsers) {
+        return error("invalid_users no free user slots");
+    }
+
+    std::uint32_t removed = 0;
+    std::uint32_t added   = 0;
+    for (std::uint32_t i = 0; i < remove_count; ++i) {
+        const char *id = remove_ids.data() + i * (MAX_USER_ID_LEN + 1);
+        auto index     = method->remove_user(id);
+        if (!index) {
+            return error("reload_failed remove_user");
+        }
+        runtime.tcp->drop_user(*index);
+        runtime.udp->drop_user(*index);
+        ++removed;
+    }
+    reclaim_retired_users();
+
+    for (int i = 0; i < conf.user_num; ++i) {
+        if (!needs_add[i]) {
+            continue;
+        }
+        auto index = method->add_user(conf.users[i].id, conf.users[i].key);
+        if (!index) {
+            return error("reload_failed add_user");
+        }
+        runtime.users->ensure_count(static_cast<std::uint32_t>(*index) + 1);
+        ++added;
+    }
+    reclaim_retired_users();
+
+    snprintf(out, capacity, "ok\tadded=%u\tremoved=%u", added, removed);
+    return true;
+}
+
+static bool
+control_reload(void *ctx, char *out, std::size_t capacity) noexcept
+{
+    (void)ctx;
+    return reload_users(out, capacity);
+}
 
 static char *
 get_peer_name(int fd)
@@ -1324,6 +1549,7 @@ Same behavior as `-d`; see that option for details. Short alias: `-d`.
         if (!access_log_set) {
             access_log = conf->access_log;
         }
+        require_identity         = conf->require_identity;
         anon_limits_set          = conf->anon_limits_set;
         anon_max_tcp_connections = conf->anon_max_tcp_connections;
         anon_max_udp_sessions    = conf->anon_max_udp_sessions;
@@ -1430,7 +1656,8 @@ Same behavior as `-d`; see that option for details. Short alias: `-d`.
         plugin_host = (char *)"127.0.0.1";
     }
 
-    remote_port = server_port;
+    remote_port         = server_port;
+    runtime.server_port = server_port;
 
 #ifdef __MINGW32__
     winsock_init();
@@ -1526,6 +1753,13 @@ Same behavior as `-d`; see that option for details. Short alias: `-d`.
     // setup keys
     LOGI("initializing ciphers... %s", method);
     ss::relay::Method relay_method;
+    runtime.conf_path        = conf_path;
+    runtime.method           = method;
+    runtime.password         = password;
+    runtime.key              = key;
+    runtime.require_identity = require_identity;
+    runtime.method_obj       = &relay_method;
+    runtime.users            = &user_registry;
     if (!relay_method.init(method, password, key, ss::crypto::Role::server))
         FATAL("failed to initialize ciphers");
     for (int i = 0; i < user_num; ++i) {
@@ -1533,9 +1767,12 @@ Same behavior as `-d`; see that option for details. Short alias: `-d`.
             FATAL("failed to add a SIP023 user (users require 2022-blake3-aes-128/256-gcm)");
         }
     }
+    if (require_identity && !relay_method.is_2022_aes()) {
+        FATAL("require_identity requires 2022-blake3-aes-128/256-gcm");
+    }
     if (relay_method.is_2022() && !relay_method.reserve_salt_pool(65536, randombytes_random()))
         FATAL("failed to set up the AEAD-2022 salt pool");
-    user_registry.set_count(relay_method.user_count());
+    user_registry.set_count(relay_method.user_slots());
     const bool limits_enabled = relay_method.user_count() != 0 || anon_limits_set != 0;
     if (limits_enabled) {
         ss::relay::AnonymousLimits limits;
@@ -1621,6 +1858,8 @@ Same behavior as `-d`; see that option for details. Short alias: `-d`.
     ss::relay::Resolver tcp_resolver;
     ss::relay::TcpRelay tcp_relay;
     ss::relay::UdpRelay udp_relay;
+    runtime.tcp = &tcp_relay;
+    runtime.udp = &udp_relay;
 #ifndef __MINGW32__
     ss::relay::ControlServer control_server;
 #endif
@@ -1657,10 +1896,11 @@ Same behavior as `-d`; see that option for details. Short alias: `-d`.
         }
         tcp_config.tx             = &tx;
         tcp_config.rx             = &rx;
-        tcp_config.users          = &user_registry;
-        tcp_config.limiter        = limits_enabled ? &peer_limiter : nullptr;
-        tcp_config.access_log     = access_log != 0;
-        tcp_config.report_failure = &report_failure;
+        tcp_config.users            = &user_registry;
+        tcp_config.limiter          = limits_enabled ? &peer_limiter : nullptr;
+        tcp_config.require_identity = require_identity != 0;
+        tcp_config.access_log       = access_log != 0;
+        tcp_config.report_failure   = &report_failure;
 #ifdef USE_NFCONNTRACK_TOS
         tcp_config.downstream = &setTosFromConnmark;
         tcp_config.release    = &releaseTracker;
@@ -1724,10 +1964,11 @@ Same behavior as `-d`; see that option for details. Short alias: `-d`.
         udp_config.label        = remote_port != NULL ? remote_port : "";
         udp_config.tx           = &tx;
         udp_config.rx           = &rx;
-        udp_config.users        = &user_registry;
-        udp_config.limiter      = limits_enabled ? &peer_limiter : nullptr;
-        udp_config.access_log   = access_log != 0;
-        udp_config.acl          = acl != 0;
+        udp_config.users            = &user_registry;
+        udp_config.limiter          = limits_enabled ? &peer_limiter : nullptr;
+        udp_config.require_identity = require_identity != 0;
+        udp_config.access_log       = access_log != 0;
+        udp_config.acl              = acl != 0;
         udp_config.acl_hooks.match_host       = &acl_match_host;
         udp_config.acl_hooks.mode             = &get_acl_mode;
         udp_config.acl_hooks.outbound_blocked = &outbound_block_match_host;
@@ -1768,13 +2009,15 @@ Same behavior as `-d`; see that option for details. Short alias: `-d`.
 #ifndef __MINGW32__
     if (control_socket != NULL) {
         ss::relay::ControlData control_data;
-        control_data.method  = &relay_method;
-        control_data.users   = &user_registry;
-        control_data.limiter = limits_enabled ? &peer_limiter : nullptr;
-        control_data.tcp     = &tcp_relay;
-        control_data.udp     = &udp_relay;
-        control_data.tx      = &tx;
-        control_data.rx      = &rx;
+        control_data.method     = &relay_method;
+        control_data.users      = &user_registry;
+        control_data.limiter    = limits_enabled ? &peer_limiter : nullptr;
+        control_data.tcp        = &tcp_relay;
+        control_data.udp        = &udp_relay;
+        control_data.tx         = &tx;
+        control_data.rx         = &rx;
+        control_data.reload     = &control_reload;
+        control_data.reload_ctx = nullptr;
         if (!control_server.start(tcp_loop, control_socket, control_data)) {
             FATAL("failed to start the control socket");
         }

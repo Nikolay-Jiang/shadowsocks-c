@@ -313,6 +313,18 @@ void TcpRelay::close(Connection &conn) noexcept
     owners_[at].reset(); // begins the asynchronous close
 }
 
+std::uint32_t TcpRelay::drop_user(std::uint8_t index) noexcept
+{
+    std::uint32_t dropped = 0;
+    for (auto &owner : owners_) {
+        if (owner && owner->user_index() == index) {
+            ++dropped;
+            close(*owner);
+        }
+    }
+    return dropped;
+}
+
 const sockaddr_storage &TcpRelay::pick_remote() noexcept
 {
     auto n = static_cast<std::uint32_t>(config_.remotes.size());
@@ -1028,6 +1040,10 @@ Flow Connection::server_header() noexcept
             return Flow::proceed;
         }
         anonymous_counted_ = anonymous;
+    }
+    if (cfg.require_identity && anonymous) {
+        server_reject("anonymous connections disabled");
+        return close();
     }
     if (cfg.users != nullptr && !user_counted_) {
         cfg.users->open(user_index_, true, now);

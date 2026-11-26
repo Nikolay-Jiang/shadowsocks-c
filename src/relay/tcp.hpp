@@ -90,6 +90,7 @@ struct TcpConfig {
     void (*on_traffic)() = nullptr;
     UserRegistry *users   = nullptr; // ss-server: SIP023 per-user counters
     PeerLimiter *limiter  = nullptr; // ss-server: anonymous per-IP limits
+    bool require_identity = false;   // ss-server: reject clients without a SIP023 identity
     bool access_log       = false;   // ss-server: log authenticated connects
     // ss-server: a client failed the handshake (logging, nftables).
     void (*report_failure)(ss_socket_t client, const char *reason) = nullptr;
@@ -291,6 +292,9 @@ public:
 
     std::uint32_t live() const noexcept { return pool_.live(); }
     std::uint64_t refused() const noexcept { return refused_; }
+
+    // Close every connection that authenticated as `index`.
+    std::uint32_t drop_user(std::uint8_t index) noexcept;
 
     template <class F>
     void for_each(F &&f);

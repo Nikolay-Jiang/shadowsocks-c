@@ -22,6 +22,8 @@
 #ifndef _JCONF_H
 #define _JCONF_H
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -107,6 +109,7 @@ typedef struct {
     ss_user_t users[MAX_USER_NUM];
     char *control_socket;
     int access_log;
+    int require_identity;
     int anon_limits_set;
     int anon_max_tcp_connections;
     int anon_max_udp_sessions;
@@ -122,6 +125,35 @@ typedef struct {
 } jconf_t;
 
 jconf_t *read_jconf(const char *file);
+
+#define MAX_USER_PSK_LEN 256
+
+typedef struct {
+    char id[MAX_USER_ID_LEN + 1];
+    char key[MAX_USER_PSK_LEN];
+} ss_user_conf_t;
+
+/* The fields a running server can compare before a users-only reload. */
+typedef struct {
+    int users_present;
+    int user_num;
+    ss_user_conf_t users[MAX_USER_NUM];
+    char method[64];
+    char password[MAX_USER_PSK_LEN];
+    char key[MAX_USER_PSK_LEN];
+    char server_port[16];
+    int server_port_set;
+    int require_identity;
+    int require_identity_set;
+} ss_users_conf_t;
+
+/*
+ * Parse the fields needed by a users-only reload without touching the static
+ * arena used by read_jconf(). Returns 0 on success and -1 with a message in
+ * `error`.
+ */
+int read_jconf_users(const char *file, ss_users_conf_t *out, char *error, size_t error_size);
+
 void parse_addr(const char *str, ss_addr_t *addr);
 void free_addr(ss_addr_t *addr);
 int parse_server_endpoint(const char *str, ss_addr_t *addr);

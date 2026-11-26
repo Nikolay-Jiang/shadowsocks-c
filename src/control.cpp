@@ -163,6 +163,19 @@ void ControlServer::handle(std::span<const std::uint8_t> request, const sockaddr
         json ? anon_json() : anon_text();
     } else if (command == "stats") {
         json ? stats_json() : stats_text();
+    } else if (command == "reload") {
+        if (data_.reload == nullptr) {
+            append("error\treload unavailable\n");
+        } else {
+            char message[512] = {};
+            bool ok = data_.reload(data_.reload_ctx, message, sizeof(message));
+            if (message[0] != '\0') {
+                append(message);
+                append("\n");
+            } else {
+                append(ok ? "ok\n" : "error\treload failed\n");
+            }
+        }
     } else {
         append("error\tunknown command\n");
     }
@@ -223,7 +236,10 @@ void ControlServer::users_text()
     }
     const std::uint64_t now = loop_->now();
     append("USER\tTCP\tUDP\tTX\tRX\tLAST\tIPS\n");
-    for (std::uint32_t i = 0; i < data_.method->user_count(); ++i) {
+    for (std::uint32_t i = 0; i < data_.method->user_slots(); ++i) {
+        if (!data_.method->user_active(static_cast<std::uint8_t>(i))) {
+            continue;
+        }
         const auto &s = data_.users->at(static_cast<std::uint8_t>(i));
         std::uint32_t ips = 0;
         char seen[16][INET6_ADDRSTRLEN] = {};
@@ -279,11 +295,16 @@ void ControlServer::users_json()
     }
     const std::uint64_t now = loop_->now();
     append("{\"users\":[");
-    for (std::uint32_t i = 0; i < data_.method->user_count(); ++i) {
+    bool first = true;
+    for (std::uint32_t i = 0; i < data_.method->user_slots(); ++i) {
+        if (!data_.method->user_active(static_cast<std::uint8_t>(i))) {
+            continue;
+        }
         const auto &s = data_.users->at(static_cast<std::uint8_t>(i));
-        if (i != 0) {
+        if (!first) {
             append(",");
         }
+        first = false;
         append("{\"id\":");
         append_json_string(data_.method->user_id(static_cast<std::uint8_t>(i)));
         appendf(",\"tcp\":%u,\"udp\":%u,\"tx\":%llu,\"rx\":%llu,\"last_seen\":%llu}", s.tcp_current,
@@ -291,7 +312,7 @@ void ControlServer::users_json()
                 static_cast<unsigned long long>(s.last_seen == 0 ? 0 : age_secs(now, s.last_seen)));
     }
     const auto &anon = data_.users->anonymous();
-    if (data_.method->user_count() != 0) {
+    if (!first) {
         append(",");
     }
     appendf("{\"id\":\"anonymous\",\"tcp\":%u,\"udp\":%u,\"tx\":%llu,\"rx\":%llu,\"last_seen\":%llu,"

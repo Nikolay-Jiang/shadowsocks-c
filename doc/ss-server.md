@@ -28,10 +28,13 @@ Options include all supported platform variants; restrictions are noted below.
 The `users` configuration object maps user names to SIP023 user PSKs. Clients
 send the server PSK followed by the user PSK as their password
 (`BASE64_SERVER_PSK:BASE64_USER_PSK`). Clients that send only the server PSK
-are anonymous and are subject to `anonymous_limits` per IP. The optional
-`control_socket` path enables the read-only `ssctl(1)` query tool. See
-docs/sip023-users.md in the source tree for the complete configuration and
-client examples.
+are anonymous and are subject to `anonymous_limits` per IP. Set
+`"require_identity": true` to reject the anonymous fallback and accept only
+configured users. The optional `control_socket` path enables the read-only
+`ssctl(1)` query tool and accepts a `reload` request that applies additions,
+removals and PSK changes from the `users` object without restarting the
+server. See docs/sip023-users.md in the source tree for the complete
+configuration, reload and client examples.
 
 \section ss_server_example EXAMPLE
 
