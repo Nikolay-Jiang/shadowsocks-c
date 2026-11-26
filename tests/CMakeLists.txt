@@ -119,6 +119,10 @@ endif()
 # Shared-reference ownership and consuming pointer moves.
 ss_add_test(test_ref "test_ref_cpp.cpp" "")
 
+# ssctl text output formatting (ages, byte counters, user IDs).
+ss_add_test(test_control_format "test_control_format_cpp.cpp" "")
+ss_strict_warnings(test_control_format.cpp)
+
 # test_base64 - no external deps
 ss_add_test(test_base64
     "test_base64_cpp.cpp;${PROJECT_SOURCE_DIR}/src/base64.cpp"
