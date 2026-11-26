@@ -6,3 +6,4 @@ libipset
 libbloom
 **/__pycache__
 **/.DS_Store
+config.json

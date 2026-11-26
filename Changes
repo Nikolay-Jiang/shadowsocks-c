@@ -1,3 +1,11 @@
+shadowsocks-libev (3.3.9-1) unstable; urgency=medium
+
+  * Apply users-only changes from config.json over the local control socket
+    without restarting, drop removed or rotated users' TCP/UDP sessions
+    immediately, and add require_identity to reject anonymous clients.
+
+ -- Nikolay-Jiang <gustywolf@gmail.com>  Thu, 26 Nov 2026 00:00:00 +0800
+
 shadowsocks-libev (3.3.8-1) unstable; urgency=medium
 
   * Improve ssctl text output: compact ages and byte counters, shorten long
